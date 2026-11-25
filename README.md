@@ -70,6 +70,8 @@ CLI-синхронизатор музыкальной библиотеки ме�
 
 ## Установка
 
+### Linux и macOS
+
 Из исходников:
 
 ```bash
@@ -91,6 +93,36 @@ go build -trimpath -o music-syncer ./cmd/music-syncer
 go install github.com/zxbass/music-syncer/cmd/music-syncer@latest
 ```
 
+### Windows (PowerShell)
+
+Требуется Go 1.26+ и Git (или скачанный ZIP-архив репозитория).
+`make` не нужен — используйте `go build`:
+
+```powershell
+git clone https://github.com/zxbass/music-syncer.git
+cd music-syncer
+go build -trimpath -o music-syncer.exe .\cmd\music-syncer
+.\music-syncer.exe --help
+```
+
+Установка в `%USERPROFILE%\go\bin`:
+
+```powershell
+go install github.com/zxbass/music-syncer/cmd/music-syncer@latest
+```
+
+После этого добавьте `%USERPROFILE%\go\bin` в `PATH` и запускайте
+`music-syncer.exe` из любого каталога.
+
+Во всех примерах ниже бинарник называется `music-syncer`. В Windows это
+`music-syncer.exe`, а из текущего каталога его нужно запускать так:
+
+```powershell
+.\music-syncer.exe --help
+```
+
+Если программа уже добавлена в `PATH`, префикс `.\` не нужен.
+
 ## Настройка Spotify
 
 1. Откройте <https://developer.spotify.com/dashboard> и создайте приложение.
@@ -103,8 +135,16 @@ go install github.com/zxbass/music-syncer/cmd/music-syncer@latest
 3. Скопируйте **Client ID** (Client Secret для PKCE не нужен).
 4. Выполните:
 
+   Linux/macOS:
+
    ```bash
    music-syncer auth spotify --client-id ВАШ_CLIENT_ID
+   ```
+
+   Windows PowerShell:
+
+   ```powershell
+   .\music-syncer.exe auth spotify --client-id "ВАШ_CLIENT_ID"
    ```
 
 Браузер откроется автоматически. Если вы на удалённом сервере или браузер не
@@ -112,6 +152,10 @@ go install github.com/zxbass/music-syncer/cmd/music-syncer@latest
 
 ```bash
 music-syncer auth spotify --client-id ВАШ_CLIENT_ID --manual
+```
+
+```powershell
+.\music-syncer.exe auth spotify --client-id "ВАШ_CLIENT_ID" --manual
 ```
 
 Команда выведет URL. После подтверждения браузер попытается открыть
@@ -144,12 +188,31 @@ https://oauth.yandex.ru/authorize?response_type=token&client_id=23cabbbdc6cd418a
 music-syncer auth yandex --token y0_...
 ```
 
+Windows PowerShell:
+
+```powershell
+.\music-syncer.exe auth yandex --token "y0_..."
+```
+
 Или сохраните в переменной окружения:
 
 ```bash
 export YANDEX_MUSIC_TOKEN=y0_...
 music-syncer auth yandex
 ```
+
+```powershell
+$env:YANDEX_MUSIC_TOKEN = "y0_..."
+.\music-syncer.exe auth yandex
+```
+
+Чтобы переменная сохранилась между сеансами PowerShell:
+
+```powershell
+setx YANDEX_MUSIC_TOKEN "y0_..."
+```
+
+После `setx` откройте новый терминал.
 
 Дополнительно поддерживается OAuth Device Flow. Для него нужен client secret
 вашего OAuth-приложения (в репозитории он не хранится):
@@ -160,10 +223,18 @@ export YANDEX_MUSIC_CLIENT_SECRET=...
 music-syncer auth yandex
 ```
 
+```powershell
+$env:YANDEX_MUSIC_CLIENT_ID = "..."
+$env:YANDEX_MUSIC_CLIENT_SECRET = "..."
+.\music-syncer.exe auth yandex
+```
+
 Команда покажет URL и короткий код. Подтвердите вход на любом устройстве —
 токен сохранится автоматически.
 
 ## Быстрый старт
+
+Linux/macOS:
 
 ```bash
 # 1. Подключить аккаунты
@@ -181,6 +252,24 @@ music-syncer transfer --from yandex --to spotify
 music-syncer transfer --from spotify --to yandex --only playlists,likes
 ```
 
+Windows PowerShell:
+
+```powershell
+# 1. Подключить аккаунты
+.\music-syncer.exe auth yandex --token "y0_..."
+.\music-syncer.exe auth spotify --client-id "ВАШ_CLIENT_ID"
+.\music-syncer.exe auth status
+
+# 2. Посмотреть, что будет сделано
+.\music-syncer.exe transfer --from yandex --to spotify --dry-run
+
+# 3. Перенести плейлисты, любимые треки и артистов (по умолчанию)
+.\music-syncer.exe transfer --from yandex --to spotify
+
+# 4. Обратное направление
+.\music-syncer.exe transfer --from spotify --to yandex --only playlists,likes
+```
+
 Если подключены оба аккаунта и не указаны `--from`/`--to`, по умолчанию
 используется направление **Яндекс → Spotify**.
 
@@ -189,6 +278,9 @@ music-syncer transfer --from spotify --to yandex --only playlists,likes
 ничего не удаляется).
 
 ## Команды
+
+В примерах ниже используется `music-syncer`; в Windows запускайте
+`.\music-syncer.exe` (или `music-syncer.exe`, если каталог добавлен в `PATH`).
 
 ### `auth`
 
@@ -318,11 +410,19 @@ music-syncer cache clear
 
 ## Конфигурация и состояние
 
-По умолчанию (Linux):
+Пути по умолчанию:
+
+| ОС | Конфиг | Состояние |
+|---|---|---|
+| Linux | `~/.config/music-syncer/config.yaml` | `~/.config/music-syncer/state.json` |
+| macOS | `~/Library/Application Support/music-syncer/config.yaml` | `~/Library/Application Support/music-syncer/state.json` |
+| Windows | `%AppData%\music-syncer\config.yaml` | `%AppData%\music-syncer\state.json` |
+
+На Windows это обычно:
 
 ```
-~/.config/music-syncer/config.yaml   # настройки и токены, mode 0600
-~/.config/music-syncer/state.json    # кэш совпадений и связей, mode 0600
+C:\Users\<имя>\AppData\Roaming\music-syncer\config.yaml
+C:\Users\<имя>\AppData\Roaming\music-syncer\state.json
 ```
 
 - `--config PATH` — другой файл конфигурации;
@@ -333,10 +433,21 @@ music-syncer cache clear
   параметры для OAuth Device Flow Яндекса;
 - `SPOTIFY_CLIENT_ID` — client ID по умолчанию.
 
+Windows PowerShell:
+
+```powershell
+.\music-syncer.exe --config "D:\music-syncer\config.yaml" auth status
+$env:MUSIC_SYNCER_CONFIG = "D:\music-syncer\config.yaml"
+$env:MUSIC_SYNCER_STATE = "D:\music-syncer\state.json"
+```
+
 Пример конфигурации: [`config.example.yaml`](config.example.yaml).
 
 Файлы содержат OAuth-токены. Не коммитьте их и не пересылайте. Приложение
 создаёт их с правами `0600`; `auth status` предупредит, если права ослаблены.
+На Windows POSIX-права не применяются — доступ определяется ACL профиля
+пользователя, поэтому не размещайте конфиг в общедоступных или синхронизируемых
+каталогах.
 
 ## Отчёты
 
@@ -374,12 +485,24 @@ internal/config/         конфигурация
 
 ## Разработка
 
+Linux/macOS:
+
 ```bash
 make test          # go test ./...
 make test-race     # go test -race ./...
 make vet           # go vet ./...
 make build         # бинарник с версией из git
 make run           # go run ./cmd/music-syncer --help
+```
+
+Windows PowerShell (Makefile не обязателен):
+
+```powershell
+go test ./...
+go test -race ./...
+go vet ./...
+go build -trimpath -ldflags "-s -w" -o music-syncer.exe .\cmd\music-syncer
+go run .\cmd\music-syncer --help
 ```
 
 Тесты не ходят в реальные API: HTTP-клиенты проверяются через `httptest`,
