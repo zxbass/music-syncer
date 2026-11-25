@@ -50,6 +50,12 @@ func TestMatchesPlaylistsArtists(t *testing.T) {
 	if !ok || artist.TargetID != "sa" {
 		t.Errorf("artist link = %+v, ok=%v", artist, ok)
 	}
+	if !reopened.TargetPlaylistInUse(domain.Spotify, "spl") {
+		t.Error("target playlist should be marked as in use")
+	}
+	if reopened.TargetPlaylistInUse(domain.Yandex, "spl") {
+		t.Error("target playlist should only be in use for the linked target provider")
+	}
 	stats := reopened.Stats()
 	if stats.Matches != 1 || stats.Playlists != 1 || stats.Artists != 1 {
 		t.Errorf("stats = %+v", stats)

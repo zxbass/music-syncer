@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -207,6 +208,20 @@ func (s *Store) PutPlaylist(src, dst domain.Name, srcID, targetID, targetName st
 		UpdatedAt:  time.Now().UTC(),
 	}
 	s.dirty = true
+}
+
+// TargetPlaylistInUse reports whether any source playlist is already linked to
+// targetID for the given target provider.
+func (s *Store) TargetPlaylistInUse(dst domain.Name, targetID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	suffix := "->" + string(dst)
+	for key, link := range s.data.Playlists {
+		if link.TargetID == targetID && strings.HasSuffix(key, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ArtistKey builds the cache key for a source artist.

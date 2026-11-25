@@ -3,12 +3,14 @@ package spotify
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -146,7 +148,7 @@ func TestPlaylistTracksLegacyFallback(t *testing.T) {
 	}
 }
 
-func TestLikedTracksArtistsHistory(t *testing.T) {
+func TestLikedTracksAndArtists(t *testing.T) {
 	provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/me/tracks":
@@ -171,15 +173,6 @@ func TestLikedTracksArtistsHistory(t *testing.T) {
 					"cursors": map[string]any{"after": ""},
 				}})
 			}
-		case "/v1/me/player/recently-played":
-			writeJSON(w, 200, map[string]any{"items": []any{map[string]any{
-				"played_at": time.Now().Add(-time.Hour).Format(time.RFC3339),
-				"track": map[string]any{
-					"id": "h1", "name": "Played", "duration_ms": 1000,
-					"artists": []any{map[string]any{"name": "Artist"}},
-					"album":   map[string]any{"id": "al", "name": "Album"},
-				},
-			}}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -192,10 +185,6 @@ func TestLikedTracksArtistsHistory(t *testing.T) {
 	artists, err := provider.LikedArtists(context.Background(), 0)
 	if err != nil || len(artists) != 2 {
 		t.Fatalf("artists = %+v, err=%v", artists, err)
-	}
-	history, err := provider.History(context.Background(), time.Time{}, 0)
-	if err != nil || len(history) != 1 || history[0].Track.ID != "h1" {
-		t.Fatalf("history = %+v, err=%v", history, err)
 	}
 }
 
@@ -322,6 +311,51 @@ func TestCreatePlaylistAndAddRemove(t *testing.T) {
 	items, _ := removeBody["items"].([]any)
 	if len(items) != 1 {
 		t.Errorf("remove body = %+v", removeBody)
+	}
+}
+
+func TestLibraryWritesRespectFortyURILimit(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		batches []int
+	)
+	provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/me/library" {
+			http.NotFound(w, r)
+			return
+		}
+		uris := r.URL.Query().Get("uris")
+		mu.Lock()
+		batches = append(batches, len(strings.Split(uris, ",")))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	var tracks []domain.Track
+	for i := 0; i < 45; i++ {
+		tracks = append(tracks, domain.Track{ID: fmt.Sprintf("t%d", i)})
+	}
+	if err := provider.LikeTracks(context.Background(), tracks); err != nil {
+		t.Fatal(err)
+	}
+	var artists []domain.Artist
+	for i := 0; i < 45; i++ {
+		artists = append(artists, domain.Artist{ID: fmt.Sprintf("a%d", i)})
+	}
+	if err := provider.FollowArtists(context.Background(), artists); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := append([]int(nil), batches...)
+	mu.Unlock()
+	want := []int{40, 5, 40, 5}
+	if len(got) != len(want) {
+		t.Fatalf("batches = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("batches = %v, want %v", got, want)
+		}
 	}
 }
 

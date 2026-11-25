@@ -20,7 +20,6 @@ type Categories struct {
 	Playlists bool
 	Likes     bool
 	Artists   bool
-	History   bool
 }
 
 // ParseCategories parses a comma-separated list such as
@@ -39,12 +38,10 @@ func ParseCategories(value string) (Categories, error) {
 			c.Likes = true
 		case "artists", "artist":
 			c.Artists = true
-		case "history":
-			c.History = true
 		case "all":
-			c = Categories{Playlists: true, Likes: true, Artists: true, History: true}
+			c = Categories{Playlists: true, Likes: true, Artists: true}
 		default:
-			return Categories{}, fmt.Errorf("unknown category %q (want playlists, likes, artists, history or all)", part)
+			return Categories{}, fmt.Errorf("unknown category %q (want playlists, likes, artists or all)", part)
 		}
 	}
 	return c, nil
@@ -62,9 +59,6 @@ func (c Categories) String() string {
 	if c.Artists {
 		parts = append(parts, "artists")
 	}
-	if c.History {
-		parts = append(parts, "history")
-	}
 	if len(parts) == 0 {
 		return "none"
 	}
@@ -81,8 +75,7 @@ type Options struct {
 	Mirror       bool
 	DryRun       bool
 	// Limit caps the number of source tracks per collection. Zero means all.
-	Limit        int
-	HistorySince time.Time
+	Limit int
 }
 
 // TrackStats summarizes a track collection sync.
@@ -137,18 +130,6 @@ type PlaylistResult struct {
 	Error       string      `json:"error,omitempty"`
 }
 
-// HistoryResult is the outcome of archiving listening history.
-type HistoryResult struct {
-	Events           int         `json:"events"`
-	UniqueTracks     int         `json:"unique_tracks"`
-	TargetPlaylistID string      `json:"target_playlist_id,omitempty"`
-	TargetName       string      `json:"target_name,omitempty"`
-	WouldCreate      bool        `json:"would_create,omitempty"`
-	Stats            TrackStats  `json:"stats"`
-	Unmatched        []Unmatched `json:"unmatched,omitempty"`
-	Notes            []string    `json:"notes,omitempty"`
-}
-
 // Report is a complete synchronization report.
 type Report struct {
 	StartedAt        time.Time         `json:"started_at"`
@@ -160,7 +141,6 @@ type Report struct {
 	Playlists        []PlaylistResult  `json:"playlists,omitempty"`
 	Likes            *TrackStats       `json:"likes,omitempty"`
 	Artists          *ArtistStats      `json:"artists,omitempty"`
-	History          *HistoryResult    `json:"history,omitempty"`
 	Errors           []string          `json:"errors,omitempty"`
 	UnmatchedLikes   []Unmatched       `json:"unmatched_likes,omitempty"`
 	UnmatchedArtists []UnmatchedArtist `json:"unmatched_artists,omitempty"`
@@ -230,15 +210,6 @@ func (e *Engine) Run(ctx context.Context) (*Report, error) {
 				return e.abort(err)
 			}
 			e.recordError("artists", err)
-			errs = append(errs, err)
-		}
-	}
-	if e.Options.Categories.History {
-		if err := e.syncHistory(ctx); err != nil {
-			if isFatal(err) {
-				return e.abort(err)
-			}
-			e.recordError("history", err)
 			errs = append(errs, err)
 		}
 	}
@@ -321,32 +292,32 @@ func (e *Engine) resolve(ctx context.Context, src domain.Track, known *trackInde
 		}, nil
 	}
 
+	unmatched := e.unmatchedTrack(src, ranked)
+	return resolution{Unmatched: unmatched}, nil
+}
+
+func (e *Engine) unmatchedTrack(src domain.Track, ranked []matcher.Candidate) *Unmatched {
 	unmatched := &Unmatched{Source: src}
-	switch {
-	case len(ranked) == 0:
+	if len(ranked) == 0 {
 		unmatched.Reason = "no search results"
-	case ranked[0].StrongVersionConflict:
-		unmatched.Reason = fmt.Sprintf("best candidate %q is a different version (score %.2f)", ranked[0].Track.String(), ranked[0].Score)
-		c := ranked[0]
-		unmatched.Best = &c
-	case ranked[0].TitleScore < e.Matcher.MinTitle:
-		unmatched.Reason = fmt.Sprintf("title is too different (best title score %.2f)", ranked[0].TitleScore)
-		c := ranked[0]
-		unmatched.Best = &c
-	case ranked[0].ArtistScore < e.Matcher.MinArtist:
-		unmatched.Reason = fmt.Sprintf("artist does not match (best artist score %.2f)", ranked[0].ArtistScore)
-		c := ranked[0]
-		unmatched.Best = &c
-	case ranked[0].Score < e.Matcher.Threshold:
-		unmatched.Reason = fmt.Sprintf("best score %.2f is below threshold %.2f", ranked[0].Score, e.Matcher.Threshold)
-		c := ranked[0]
-		unmatched.Best = &c
+		return unmatched
+	}
+
+	best := ranked[0]
+	unmatched.Best = &best
+	switch {
+	case best.StrongVersionConflict:
+		unmatched.Reason = fmt.Sprintf("best candidate %q is a different version (score %.2f)", best.Track.String(), best.Score)
+	case best.TitleScore < e.Matcher.MinTitle:
+		unmatched.Reason = fmt.Sprintf("title is too different (best title score %.2f)", best.TitleScore)
+	case best.ArtistScore < e.Matcher.MinArtist:
+		unmatched.Reason = fmt.Sprintf("artist does not match (best artist score %.2f)", best.ArtistScore)
+	case best.Score < e.Matcher.Threshold:
+		unmatched.Reason = fmt.Sprintf("best score %.2f is below threshold %.2f", best.Score, e.Matcher.Threshold)
 	default:
 		unmatched.Reason = "duration differs too much"
-		c := ranked[0]
-		unmatched.Best = &c
 	}
-	return resolution{Unmatched: unmatched}, nil
+	return unmatched
 }
 
 func (e *Engine) resolveArtist(ctx context.Context, src domain.Artist, known *artistIndex, knownIDs map[string]bool) (domain.Artist, bool, *UnmatchedArtist, error) {
@@ -371,9 +342,8 @@ func (e *Engine) resolveArtist(ctx context.Context, src domain.Artist, known *ar
 	}
 	unmatched := &UnmatchedArtist{Source: src, Reason: "no confident artist match"}
 	if best.Score > 0 {
-		c := best
-		unmatched.Best = &c
-		unmatched.Reason = fmt.Sprintf("best score %.2f is below threshold 0.80", best.Score)
+		unmatched.Best = &best
+		unmatched.Reason = fmt.Sprintf("best score %.2f is below threshold %.2f", best.Score, matcher.DefaultArtistThreshold)
 	}
 	return domain.Artist{}, false, unmatched, nil
 }

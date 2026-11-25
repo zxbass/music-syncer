@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -220,34 +219,6 @@ func (a *App) identify(ctx context.Context, p domain.Provider) (domain.Account, 
 		}
 	}
 	return acc, nil
-}
-
-func parseSince(value string) (time.Time, error) {
-	value = strings.TrimSpace(strings.ToLower(value))
-	if value == "" {
-		return time.Time{}, nil
-	}
-	if t, err := time.ParseInLocation("2006-01-02", value, time.Local); err == nil {
-		return t, nil
-	}
-	if t, err := time.Parse(time.RFC3339, value); err == nil {
-		return t, nil
-	}
-	unit := value[len(value)-1]
-	if unit == 'd' || unit == 'w' || unit == 'm' {
-		n, err := strconv.Atoi(value[:len(value)-1])
-		if err == nil && n >= 0 {
-			switch unit {
-			case 'd':
-				return time.Now().AddDate(0, 0, -n), nil
-			case 'w':
-				return time.Now().AddDate(0, 0, -7*n), nil
-			case 'm':
-				return time.Now().AddDate(0, -n, 0), nil
-			}
-		}
-	}
-	return time.Time{}, fmt.Errorf("invalid date %q (use YYYY-MM-DD or a relative value such as 30d, 4w, 6m)", value)
 }
 
 func writeJSONFile(path string, value any) error {

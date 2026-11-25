@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/zxbass/music-syncer/internal/domain"
 	"github.com/zxbass/music-syncer/internal/matcher"
@@ -22,7 +21,6 @@ type fakeProvider struct {
 	playlistTracks map[string][]domain.Track
 	liked          []domain.Track
 	artists        []domain.Artist
-	history        []domain.PlayEvent
 
 	catalog       []domain.Track
 	artistCatalog []domain.Artist
@@ -50,7 +48,6 @@ func (f *fakeProvider) Capabilities() domain.Capabilities {
 		Playlists:      true,
 		LikedTracks:    true,
 		FollowedArtist: true,
-		HistoryRead:    true,
 	}
 }
 
@@ -78,20 +75,6 @@ func (f *fakeProvider) LikedArtists(_ context.Context, limit int) ([]domain.Arti
 	result := append([]domain.Artist(nil), f.artists...)
 	if limit > 0 && len(result) > limit {
 		result = result[:limit]
-	}
-	return result, nil
-}
-
-func (f *fakeProvider) History(_ context.Context, since time.Time, limit int) ([]domain.PlayEvent, error) {
-	var result []domain.PlayEvent
-	for _, ev := range f.history {
-		if !since.IsZero() && ev.PlayedAt.Before(since) {
-			continue
-		}
-		result = append(result, ev)
-		if limit > 0 && len(result) >= limit {
-			break
-		}
 	}
 	return result, nil
 }
@@ -283,6 +266,76 @@ func TestPlaylistDryRun(t *testing.T) {
 	}
 }
 
+func TestLinkedTargetIsNotReusedByAnotherSourcePlaylist(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.addPlaylist("Shared name", track(domain.Yandex, "y1", "Song One", "Artist", 180000))
+	src.addPlaylist("Shared name", track(domain.Yandex, "y2", "Song Two", "Artist", 180000))
+	dst := newFake(domain.Spotify)
+	dst.catalog = []domain.Track{
+		track(domain.Spotify, "s1", "Song One", "Artist", 180000),
+		track(domain.Spotify, "s2", "Song Two", "Artist", 180000),
+	}
+	linkedTarget := dst.addPlaylist("Shared name")
+
+	engine, st := newTestEngine(t, src, dst, Options{Categories: Categories{Playlists: true}})
+	st.PutPlaylist(src.Name(), dst.Name(), src.playlists[1].ID, linkedTarget.ID, linkedTarget.Name)
+
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Playlists) != 2 {
+		t.Fatalf("got %d results", len(report.Playlists))
+	}
+	first, second := report.Playlists[0], report.Playlists[1]
+	if first.TargetID == linkedTarget.ID {
+		t.Fatalf("unlinked source reused a target owned by another source")
+	}
+	if second.TargetID != linkedTarget.ID {
+		t.Errorf("linked source got target %q, want %q", second.TargetID, linkedTarget.ID)
+	}
+	if len(dst.created) != 1 {
+		t.Errorf("created %d playlists, want 1", len(dst.created))
+	}
+	if got := len(dst.playlistTracks[linkedTarget.ID]); got != 1 {
+		t.Errorf("linked target has %d tracks, want 1", got)
+	}
+	if got := len(dst.playlistTracks[first.TargetID]); got != 1 {
+		t.Errorf("new target has %d tracks, want 1", got)
+	}
+}
+
+func TestDuplicateSourcePlaylistNamesAreNotMerged(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.addPlaylist("New playlist", track(domain.Yandex, "y1", "Song One", "Artist", 180000))
+	src.addPlaylist("New playlist", track(domain.Yandex, "y2", "Song Two", "Artist", 180000))
+	dst := newFake(domain.Spotify)
+	dst.catalog = []domain.Track{
+		track(domain.Spotify, "s1", "Song One", "Artist", 180000),
+		track(domain.Spotify, "s2", "Song Two", "Artist", 180000),
+	}
+
+	engine, _ := newTestEngine(t, src, dst, Options{Categories: Categories{Playlists: true}})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Playlists) != 2 {
+		t.Fatalf("got %d results", len(report.Playlists))
+	}
+	if report.Playlists[0].TargetID == report.Playlists[1].TargetID {
+		t.Fatalf("both source playlists were merged into %q", report.Playlists[0].TargetID)
+	}
+	if len(dst.playlists) != 2 || len(dst.created) != 2 {
+		t.Errorf("created %d playlists, want 2", len(dst.created))
+	}
+	for _, res := range report.Playlists {
+		if got := len(dst.playlistTracks[res.TargetID]); got != 1 {
+			t.Errorf("target %q has %d tracks, want 1", res.TargetID, got)
+		}
+	}
+}
+
 func TestPlaylistMirror(t *testing.T) {
 	src := newFake(domain.Yandex)
 	src.addPlaylist("Road Trip",
@@ -471,38 +524,6 @@ func TestArtists(t *testing.T) {
 	}
 }
 
-func TestHistoryArchive(t *testing.T) {
-	now := time.Now()
-	src := newFake(domain.Yandex)
-	src.history = []domain.PlayEvent{
-		{Track: track(domain.Yandex, "y1", "Song One", "Artist", 180000), PlayedAt: now.Add(-2 * time.Hour)},
-		{Track: track(domain.Yandex, "y2", "Song Two", "Artist", 180000), PlayedAt: now.Add(-time.Hour)},
-		{Track: track(domain.Yandex, "y1", "Song One", "Artist", 180000), PlayedAt: now.Add(-30 * time.Minute)},
-	}
-	dst := newFake(domain.Spotify)
-	dst.catalog = []domain.Track{
-		track(domain.Spotify, "s1", "Song One", "Artist", 180000),
-		track(domain.Spotify, "s2", "Song Two", "Artist", 180000),
-	}
-	engine, _ := newTestEngine(t, src, dst, Options{Categories: Categories{History: true}})
-	report, err := engine.Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.History.Events != 3 || report.History.UniqueTracks != 2 {
-		t.Errorf("history = %+v, want 3 events, 2 unique tracks", report.History)
-	}
-	if report.History.Stats.Added != 2 {
-		t.Errorf("added = %d, want 2", report.History.Stats.Added)
-	}
-	if len(dst.created) != 1 || !strings.Contains(dst.created[0], "History from") {
-		t.Errorf("created = %v", dst.created)
-	}
-	if len(report.History.Notes) == 0 {
-		t.Error("expected a note about read-only history")
-	}
-}
-
 func TestLimit(t *testing.T) {
 	src := newFake(domain.Yandex)
 	src.addPlaylist("Road Trip",
@@ -569,12 +590,15 @@ func TestFatalAuthErrorStopsRun(t *testing.T) {
 }
 
 func TestParseCategories(t *testing.T) {
-	c, err := ParseCategories("playlists,likes,history")
+	c, err := ParseCategories("playlists,likes,artists")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.Playlists || !c.Likes || c.Artists || !c.History {
+	if !c.Playlists || !c.Likes || !c.Artists {
 		t.Errorf("parsed categories = %+v", c)
+	}
+	if _, err := ParseCategories("history"); err == nil {
+		t.Error("expected history to be rejected")
 	}
 	if _, err := ParseCategories("nope"); err == nil {
 		t.Error("expected an error for an unknown category")

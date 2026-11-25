@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/zxbass/music-syncer/internal/domain"
 )
@@ -40,8 +39,6 @@ func (p *Provider) Capabilities() domain.Capabilities {
 		Playlists:      true,
 		LikedTracks:    true,
 		FollowedArtist: true,
-		HistoryRead:    true,
-		HistoryWrite:   false,
 	}
 }
 
@@ -266,232 +263,6 @@ func (p *Provider) mapTrack(t track, albumFallback FlexID) domain.Track {
 }
 
 // LikedTracks implements domain.Provider.
-func (p *Provider) LikedTracks(ctx context.Context, limit int) ([]domain.Track, error) {
-	uid, err := p.ensureUID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	refs, err := p.client.likedTrackRefs(ctx, uid)
-	if err != nil {
-		return nil, err
-	}
-	if limit > 0 && len(refs) > limit {
-		refs = refs[:limit]
-	}
-	return p.mapTrackRefs(ctx, refs)
-}
-
-// LikedArtists implements domain.Provider.
-func (p *Provider) LikedArtists(ctx context.Context, limit int) ([]domain.Artist, error) {
-	uid, err := p.ensureUID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := p.client.likedArtists(ctx, uid)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]domain.Artist, 0, len(raw))
-	for _, item := range raw {
-		a := item.Artist
-		if a == nil {
-			if item.Name == "" || item.ID == "" {
-				continue
-			}
-			a = &artist{ID: item.ID, Name: item.Name}
-		}
-		if a.ID == "" || a.Name == "" {
-			continue
-		}
-		result = append(result, domain.Artist{
-			Provider: domain.Yandex,
-			ID:       a.ID.String(),
-			Name:     a.Name,
-			URL:      "https://music.yandex.ru/artist/" + a.ID.String(),
-		})
-		if limit > 0 && len(result) >= limit {
-			break
-		}
-	}
-	return result, nil
-}
-
-// History implements domain.Provider. Yandex returns history grouped by day.
-func (p *Provider) History(ctx context.Context, since time.Time, limit int) ([]domain.PlayEvent, error) {
-	raw, err := p.client.history(ctx, 1000)
-	if err != nil {
-		return nil, err
-	}
-
-	type pending struct {
-		item  historyItem
-		date  time.Time
-		refID string
-	}
-	var entries []pending
-	collect := func(items []historyItem, date time.Time) {
-		for _, item := range items {
-			if item.Type != "" && item.Type != "track" {
-				continue
-			}
-			id := ""
-			if item.Data.FullModel != nil {
-				id = item.Data.FullModel.ID.String()
-			}
-			if id == "" && item.Track != nil {
-				id = item.Track.ID.String()
-			}
-			if id == "" {
-				id = item.Data.ItemID.TrackID.String()
-			}
-			if id == "" {
-				continue
-			}
-			entries = append(entries, pending{item: item, date: date, refID: id})
-		}
-	}
-
-	for _, tab := range raw.HistoryTabs {
-		date := parseHistoryDate(tab.Date)
-		for _, group := range tab.Items {
-			collect(group.Tracks, date)
-		}
-	}
-	if len(entries) == 0 {
-		// Some API versions return flat groups/items without tabs.
-		for _, group := range raw.Groups {
-			collect(group.Tracks, time.Time{})
-		}
-		collect(raw.Items, time.Time{})
-	}
-
-	var missing []string
-	for _, e := range entries {
-		full := e.item.Data.FullModel
-		if (full == nil || full.Title == "") && (e.item.Track == nil || e.item.Track.Title == "") {
-			missing = append(missing, trackID(e.refID, e.item.Data.ItemID.AlbumID.String()))
-		}
-	}
-	hydrated, err := p.hydrate(ctx, missing)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]domain.PlayEvent, 0, len(entries))
-	for _, e := range entries {
-		t := e.item.Data.FullModel
-		if t == nil || t.Title == "" {
-			t = e.item.Track
-		}
-		if t == nil || t.Title == "" {
-			if got, ok := hydrated[e.refID]; ok {
-				t = &got
-			}
-		}
-		if t == nil || t.Title == "" {
-			if !since.IsZero() && !e.date.IsZero() && e.date.Before(since) {
-				continue
-			}
-			result = append(result, domain.PlayEvent{
-				Track: domain.Track{
-					Provider: domain.Yandex,
-					ID:       e.refID,
-					AlbumID:  e.item.Data.ItemID.AlbumID.String(),
-				},
-				PlayedAt: e.date,
-				Context:  "yandex:history",
-			})
-			if limit > 0 && len(result) >= limit {
-				break
-			}
-			continue
-		}
-		if !since.IsZero() && !e.date.IsZero() && e.date.Before(since) {
-			continue
-		}
-		ev := domain.PlayEvent{
-			Track:    p.mapTrack(*t, e.item.Data.ItemID.AlbumID),
-			PlayedAt: e.date,
-			Context:  "yandex:history",
-		}
-		result = append(result, ev)
-		if limit > 0 && len(result) >= limit {
-			break
-		}
-	}
-	return result, nil
-}
-
-func parseHistoryDate(value string) time.Time {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return time.Time{}
-	}
-	if t, err := time.ParseInLocation("2006-01-02", value, time.Local); err == nil {
-		return t
-	}
-	if t, err := time.Parse(time.RFC3339, value); err == nil {
-		return t
-	}
-	return time.Time{}
-}
-
-// SearchTracks implements domain.Provider.
-func (p *Provider) SearchTracks(ctx context.Context, track domain.Track, limit int) ([]domain.Track, error) {
-	if strings.TrimSpace(track.Title) == "" {
-		return nil, nil
-	}
-	limit = clampLimit(limit, 10)
-	query := strings.TrimSpace(track.Title + " " + track.PrimaryArtist())
-	raw, err := p.client.searchTracks(ctx, sanitizeQuery(query), limit)
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) == 0 && track.PrimaryArtist() != "" {
-		raw, err = p.client.searchTracks(ctx, sanitizeQuery(track.Title), limit)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return p.mapSearchTracks(raw), nil
-}
-
-func (p *Provider) mapSearchTracks(raw []track) []domain.Track {
-	result := make([]domain.Track, 0, len(raw))
-	for _, t := range raw {
-		if t.ID.String() == "" || t.Title == "" {
-			continue
-		}
-		result = append(result, p.mapTrack(t, ""))
-	}
-	return result
-}
-
-// SearchArtists implements domain.Provider.
-func (p *Provider) SearchArtists(ctx context.Context, artist domain.Artist, limit int) ([]domain.Artist, error) {
-	if strings.TrimSpace(artist.Name) == "" {
-		return nil, nil
-	}
-	raw, err := p.client.searchArtists(ctx, sanitizeQuery(artist.Name), clampLimit(limit, 10))
-	if err != nil {
-		return nil, err
-	}
-	result := make([]domain.Artist, 0, len(raw))
-	for _, a := range raw {
-		if a.ID.String() == "" || a.Name == "" {
-			continue
-		}
-		result = append(result, domain.Artist{
-			Provider: domain.Yandex,
-			ID:       a.ID.String(),
-			Name:     a.Name,
-			URL:      "https://music.yandex.ru/artist/" + a.ID.String(),
-		})
-	}
-	return result, nil
-}
-
-// CreatePlaylist implements domain.Provider. Playlists are created private.
 func (p *Provider) CreatePlaylist(ctx context.Context, name, description string) (domain.Playlist, error) {
 	uid, err := p.ensureUID(ctx)
 	if err != nil {
@@ -679,66 +450,12 @@ func (p *Provider) ownTarget(ctx context.Context, playlist domain.Playlist) (uid
 	return uid, kind, nil
 }
 
-// LikeTracks implements domain.Provider.
-func (p *Provider) LikeTracks(ctx context.Context, tracks []domain.Track) error {
-	uid, err := p.ensureUID(ctx)
-	if err != nil {
-		return err
-	}
-	var ids []string
-	for _, t := range tracks {
-		if t.ID != "" {
-			ids = append(ids, t.ID)
-		}
-	}
-	for start := 0; start < len(ids); start += 100 {
-		end := min(start+100, len(ids))
-		if err := p.client.addLikedTracks(ctx, uid, ids[start:end]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// FollowArtists implements domain.Provider.
-func (p *Provider) FollowArtists(ctx context.Context, artists []domain.Artist) error {
-	uid, err := p.ensureUID(ctx)
-	if err != nil {
-		return err
-	}
-	var ids []string
-	for _, a := range artists {
-		if a.ID != "" {
-			ids = append(ids, a.ID)
-		}
-	}
-	for start := 0; start < len(ids); start += 100 {
-		end := min(start+100, len(ids))
-		if err := p.client.addLikedArtists(ctx, uid, ids[start:end]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func isRevisionMismatch(err error) bool {
 	var apiErr *domain.APIError
 	if !errors.As(err, &apiErr) {
 		return false
 	}
 	return apiErr.StatusCode == 412
-}
-
-func clampLimit(limit, max int) int {
-	if limit <= 0 || limit > max {
-		return max
-	}
-	return limit
-}
-
-func sanitizeQuery(q string) string {
-	q = strings.NewReplacer("\n", " ", "\r", " ", `"`, " ").Replace(q)
-	return strings.Join(strings.Fields(q), " ")
 }
 
 var _ domain.Provider = (*Provider)(nil)

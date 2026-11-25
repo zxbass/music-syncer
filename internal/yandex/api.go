@@ -61,16 +61,6 @@ func (c *Client) likedArtists(ctx context.Context, uid string) ([]likedArtist, e
 	return out, nil
 }
 
-func (c *Client) history(ctx context.Context, fullModels int) (historyResponse, error) {
-	if fullModels <= 0 {
-		fullModels = 1000
-	}
-	q := url.Values{"fullModelsCount": {strconv.Itoa(fullModels)}}
-	var out historyResponse
-	err := c.request(ctx, "GET", "/music-history", q, nil, &out)
-	return out, err
-}
-
 func (c *Client) searchTracks(ctx context.Context, text string, limit int) ([]track, error) {
 	if limit <= 0 {
 		limit = 10

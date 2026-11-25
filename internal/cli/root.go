@@ -30,10 +30,9 @@ func NewRootCmd() *cobra.Command {
 		Short: "Transfer playlists, liked tracks and artists between Yandex Music and Spotify",
 		Long: `music-syncer transfers a music library between Yandex Music and Spotify.
 
-It can move playlists, liked tracks, followed artists and (as an archive
-playlist) listening history in either direction. Cross-service matching is
-done by title, artist, duration and ISRC, with a conservative confidence
-threshold.
+It can move playlists, liked tracks and followed artists in either direction.
+Cross-service matching is done by title, artist, duration and ISRC, with a
+conservative confidence threshold.
 
 Yandex Music uses an unofficial API and a personal OAuth token. Spotify uses
 the official Web API with PKCE.`,

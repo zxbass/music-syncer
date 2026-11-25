@@ -9,12 +9,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/zxbass/music-syncer/internal/domain"
 )
 
-const pageSize = 50
+const (
+	pageSize         = 50
+	libraryBatchSize = 40 // Spotify's documented limit for PUT /me/library
+)
 
 // Provider adapts the Spotify client to domain.Provider.
 type Provider struct {
@@ -42,8 +44,6 @@ func (p *Provider) Capabilities() domain.Capabilities {
 		Playlists:      true,
 		LikedTracks:    true,
 		FollowedArtist: true,
-		HistoryRead:    true,
-		HistoryWrite:   false,
 	}
 }
 
@@ -239,32 +239,6 @@ func (p *Provider) LikedArtists(ctx context.Context, limit int) ([]domain.Artist
 	return result, nil
 }
 
-// History implements domain.Provider. Spotify only exposes the last 50 plays.
-func (p *Provider) History(ctx context.Context, since time.Time, limit int) ([]domain.PlayEvent, error) {
-	var page recentlyPlayedPage
-	if err := p.client.Get(ctx, "/me/player/recently-played", url.Values{"limit": {"50"}}, &page); err != nil {
-		return nil, err
-	}
-	var result []domain.PlayEvent
-	for _, item := range page.Items {
-		if item.Track == nil || item.Track.IsLocal || item.Track.ID == "" {
-			continue
-		}
-		if !since.IsZero() && item.PlayedAt.Before(since) {
-			continue
-		}
-		ev := domain.PlayEvent{Track: item.Track.toDomain(), PlayedAt: item.PlayedAt}
-		if item.Context != nil {
-			ev.Context = item.Context.Type + ":" + item.Context.URI
-		}
-		result = append(result, ev)
-		if limit > 0 && len(result) >= limit {
-			break
-		}
-	}
-	return result, nil
-}
-
 // SearchTracks implements domain.Provider.
 func (p *Provider) SearchTracks(ctx context.Context, track domain.Track, limit int) ([]domain.Track, error) {
 	if track.Title == "" {
@@ -446,22 +420,13 @@ func (p *Provider) LikeTracks(ctx context.Context, tracks []domain.Track) error 
 			uris = append(uris, "spotify:track:"+t.ID)
 		}
 	}
-	for start := 0; start < len(uris); start += 50 {
-		end := min(start+50, len(uris))
-		q := url.Values{"uris": {strings.Join(uris[start:end], ",")}}
-		err := p.client.Put(ctx, "/me/library", q, nil)
-		if isUnsupported(err) {
-			ids := make([]string, 0, end-start)
-			for _, uri := range uris[start:end] {
-				ids = append(ids, strings.TrimPrefix(uri, "spotify:track:"))
-			}
-			err = p.client.Put(ctx, "/me/tracks", url.Values{"ids": {strings.Join(ids, ",")}}, nil)
+	return p.saveLibraryURIs(ctx, uris, func(batch []string) error {
+		ids := make([]string, 0, len(batch))
+		for _, uri := range batch {
+			ids = append(ids, strings.TrimPrefix(uri, "spotify:track:"))
 		}
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+		return p.client.Put(ctx, "/me/tracks", url.Values{"ids": {strings.Join(ids, ",")}}, nil)
+	})
 }
 
 // FollowArtists implements domain.Provider.
@@ -472,19 +437,28 @@ func (p *Provider) FollowArtists(ctx context.Context, artists []domain.Artist) e
 			uris = append(uris, "spotify:artist:"+a.ID)
 		}
 	}
-	for start := 0; start < len(uris); start += 50 {
-		end := min(start+50, len(uris))
-		q := url.Values{"uris": {strings.Join(uris[start:end], ",")}}
+	return p.saveLibraryURIs(ctx, uris, func(batch []string) error {
+		ids := make([]string, 0, len(batch))
+		for _, uri := range batch {
+			ids = append(ids, strings.TrimPrefix(uri, "spotify:artist:"))
+		}
+		return p.client.Put(ctx, "/me/following", url.Values{
+			"type": {"artist"},
+			"ids":  {strings.Join(ids, ",")},
+		}, nil)
+	})
+}
+
+// saveLibraryURIs writes URIs in batches accepted by the generic library
+// endpoint. legacy is called for each batch when the endpoint is unavailable.
+func (p *Provider) saveLibraryURIs(ctx context.Context, uris []string, legacy func([]string) error) error {
+	for start := 0; start < len(uris); start += libraryBatchSize {
+		end := min(start+libraryBatchSize, len(uris))
+		batch := uris[start:end]
+		q := url.Values{"uris": {strings.Join(batch, ",")}}
 		err := p.client.Put(ctx, "/me/library", q, nil)
 		if isUnsupported(err) {
-			ids := make([]string, 0, end-start)
-			for _, uri := range uris[start:end] {
-				ids = append(ids, strings.TrimPrefix(uri, "spotify:artist:"))
-			}
-			err = p.client.Put(ctx, "/me/following", url.Values{
-				"type": {"artist"},
-				"ids":  {strings.Join(ids, ",")},
-			}, nil)
+			err = legacy(batch)
 		}
 		if err != nil {
 			return err

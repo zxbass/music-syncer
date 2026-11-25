@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/zxbass/music-syncer/internal/config"
 	"github.com/zxbass/music-syncer/internal/domain"
@@ -57,32 +56,6 @@ func TestTransferProviderRequiresBothAccounts(t *testing.T) {
 	}
 	if _, _, err := app.transferProviders("spotify", "yandex"); err == nil {
 		t.Error("expected an error when the target is not connected")
-	}
-}
-
-func TestParseSince(t *testing.T) {
-	got, err := parseSince("2026-01-02")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Format("2006-01-02") != "2026-01-02" {
-		t.Errorf("date = %v", got)
-	}
-
-	before := time.Now().AddDate(0, 0, -30)
-	got, err = parseSince("30d")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Before(before.Add(-time.Minute)) || got.After(time.Now()) {
-		t.Errorf("30d = %v", got)
-	}
-
-	if _, err := parseSince("nope"); err == nil {
-		t.Error("expected an error")
-	}
-	if got, err := parseSince(""); err != nil || !got.IsZero() {
-		t.Errorf("empty = %v, %v", got, err)
 	}
 }
 

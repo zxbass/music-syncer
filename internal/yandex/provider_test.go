@@ -212,68 +212,6 @@ func TestLikedArtists(t *testing.T) {
 	}
 }
 
-func TestHistory(t *testing.T) {
-	var requested []string
-	provider := newTestProvider(t, "123", func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/music-history":
-			if got := r.URL.Query().Get("fullModelsCount"); got != "1000" {
-				t.Errorf("fullModelsCount = %q", got)
-			}
-			writeJSON(w, map[string]any{"historyTabs": []any{map[string]any{
-				"date": "2026-11-24",
-				"items": []any{map[string]any{"tracks": []any{
-					map[string]any{"type": "track", "data": map[string]any{
-						"itemId": map[string]any{"trackId": 1, "albumId": 2},
-						"fullModel": map[string]any{
-							"id": 1, "title": "Full", "durationMs": 1000, "available": true,
-							"artists": []any{map[string]any{"name": "Artist"}},
-							"albums":  []any{map[string]any{"id": 2, "title": "Album"}},
-						},
-					}},
-					map[string]any{"type": "track", "data": map[string]any{
-						"itemId": map[string]any{"trackId": 3, "albumId": 4},
-					}},
-				}}},
-			}}})
-		case "/tracks":
-			_ = r.ParseForm()
-			requested = r.PostForm["track-ids"]
-			writeJSON(w, []any{map[string]any{
-				"id": 3, "title": "Hydrated", "durationMs": 2000, "available": true,
-				"artists": []any{map[string]any{"name": "Artist"}},
-				"albums":  []any{map[string]any{"id": 4, "title": "Album"}},
-			}})
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	events, err := provider.History(context.Background(), time.Time{}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 2 {
-		t.Fatalf("events = %+v", events)
-	}
-	if events[0].Track.ID != "1" || events[1].Track.ID != "3" {
-		t.Errorf("track ids = %q, %q", events[0].Track.ID, events[1].Track.ID)
-	}
-	if events[0].PlayedAt.Format("2006-01-02") != "2026-11-24" {
-		t.Errorf("played at = %v", events[0].PlayedAt)
-	}
-	if len(requested) != 1 || requested[0] != "3:4" {
-		t.Errorf("requested = %v", requested)
-	}
-
-	events, err = provider.History(context.Background(), time.Date(2026, 11, 25, 0, 0, 0, 0, time.Local), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 0 {
-		t.Errorf("since filter returned %d events", len(events))
-	}
-}
-
 func TestSearchTracksAndArtists(t *testing.T) {
 	var textCalls int32
 	provider := newTestProvider(t, "123", func(w http.ResponseWriter, r *http.Request) {

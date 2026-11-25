@@ -292,38 +292,6 @@ type likedArtist struct {
 	Name string `json:"name"`
 }
 
-type historyResponse struct {
-	HistoryTabs []historyTab   `json:"historyTabs"`
-	Groups      []historyGroup `json:"groups"`
-	Items       []historyItem  `json:"items"`
-}
-
-type historyTab struct {
-	Date  string         `json:"date"`
-	Items []historyGroup `json:"items"`
-}
-
-type historyGroup struct {
-	Context json.RawMessage `json:"context"`
-	Tracks  []historyItem   `json:"tracks"`
-}
-
-type historyItem struct {
-	Type string `json:"type"`
-	Data struct {
-		ItemID    historyItemID `json:"itemId"`
-		FullModel *track        `json:"fullModel"`
-	} `json:"data"`
-	Track    *track `json:"track"`
-	PlayedAt string `json:"playedAt"`
-}
-
-type historyItemID struct {
-	ID      FlexID `json:"id"`
-	TrackID FlexID `json:"trackId"`
-	AlbumID FlexID `json:"albumId"`
-}
-
 type changeOp struct {
 	Op     string      `json:"op"`
 	At     *int        `json:"at,omitempty"`

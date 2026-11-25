@@ -1,8 +1,6 @@
 package spotify
 
 import (
-	"time"
-
 	"github.com/zxbass/music-syncer/internal/domain"
 )
 
@@ -150,17 +148,6 @@ type followedArtistsPage struct {
 			After string `json:"after"`
 		} `json:"cursors"`
 	} `json:"artists"`
-}
-
-type recentlyPlayedPage struct {
-	Items []struct {
-		Track    *track    `json:"track"`
-		PlayedAt time.Time `json:"played_at"`
-		Context  *struct {
-			Type string `json:"type"`
-			URI  string `json:"uri"`
-		} `json:"context"`
-	} `json:"items"`
 }
 
 type searchTracksPage struct {

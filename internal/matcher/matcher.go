@@ -16,6 +16,9 @@ import (
 // DefaultThreshold is the minimum score accepted by Best.
 const DefaultThreshold = 0.72
 
+// DefaultArtistThreshold is the minimum name similarity accepted by BestArtist.
+const DefaultArtistThreshold = 0.80
+
 // Matcher scores track candidates.
 type Matcher struct {
 	Threshold  float64
@@ -78,14 +81,12 @@ func (m *Matcher) Rank(src domain.Track, candidates []domain.Track) []Candidate 
 	return ranked
 }
 
-// Best returns the best acceptable candidate.
+// Best returns the highest-ranked acceptable candidate.
 func (m *Matcher) Best(src domain.Track, candidates []domain.Track) (Candidate, bool) {
-	ranked := m.Rank(src, candidates)
-	if len(ranked) == 0 {
-		return Candidate{}, false
-	}
-	if m.Accept(ranked[0], src) {
-		return ranked[0], true
+	for _, candidate := range m.Rank(src, candidates) {
+		if m.Accept(candidate, src) {
+			return candidate, true
+		}
 	}
 	return Candidate{}, false
 }
@@ -317,7 +318,8 @@ type ArtistCandidate struct {
 	Score  float64       `json:"score"`
 }
 
-// BestArtist returns the best artist match above the threshold.
+// BestArtist returns the best artist match. The candidate is returned even
+// when it is below the threshold so callers can report the closest miss.
 func (m *Matcher) BestArtist(src domain.Artist, candidates []domain.Artist) (ArtistCandidate, bool) {
 	best := ArtistCandidate{}
 	for _, cand := range candidates {
@@ -329,10 +331,7 @@ func (m *Matcher) BestArtist(src domain.Artist, candidates []domain.Artist) (Art
 			best = ArtistCandidate{Artist: cand, Score: s}
 		}
 	}
-	if best.Score >= 0.80 {
-		return best, true
-	}
-	return ArtistCandidate{}, false
+	return best, best.Score >= DefaultArtistThreshold
 }
 
 type titleInfo struct {

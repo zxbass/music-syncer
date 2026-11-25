@@ -165,6 +165,38 @@ func TestISRCMatchBypassesTitleThresholds(t *testing.T) {
 	}
 }
 
+func TestBestSkipsRejectedTopCandidate(t *testing.T) {
+	m := New(DefaultThreshold)
+	src := domain.Track{
+		Provider: domain.Yandex, ID: "1", Title: "Song",
+		Artists: []string{"Artist"}, DurationMS: 180000,
+	}
+	candidates := []domain.Track{
+		{Provider: domain.Spotify, ID: "long", Title: "Song", Artists: []string{"Artist"}, DurationMS: 300000},
+		{Provider: domain.Spotify, ID: "studio", Title: "Song (Original)", Artists: []string{"Artist"}, DurationMS: 180000},
+	}
+	best, ok := m.Best(src, candidates)
+	if !ok {
+		t.Fatal("expected the acceptable second candidate")
+	}
+	if best.Track.ID != "studio" {
+		t.Fatalf("matched %q, want studio", best.Track.ID)
+	}
+}
+
+func TestBestArtistReturnsNearMiss(t *testing.T) {
+	m := New(DefaultThreshold)
+	src := domain.Artist{Provider: domain.Yandex, ID: "1", Name: "Abcdef"}
+	candidates := []domain.Artist{{Provider: domain.Spotify, ID: "a1", Name: "Abcxyz"}}
+	best, ok := m.BestArtist(src, candidates)
+	if ok {
+		t.Fatalf("unexpected match: %+v", best)
+	}
+	if best.Artist.ID != "a1" || best.Score <= 0 {
+		t.Fatalf("near miss was discarded: %+v", best)
+	}
+}
+
 func TestBestArtist(t *testing.T) {
 	m := New(DefaultThreshold)
 	src := domain.Artist{Provider: domain.Yandex, ID: "1", Name: "Мумий Тролль"}
