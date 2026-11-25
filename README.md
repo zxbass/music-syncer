@@ -158,6 +158,8 @@ go install github.com/zxbass/music-syncer/cmd/music-syncer@latest
 
 `@latest` устанавливает последний тег, а не локальные изменения. Если вы
 собрали проект из исходников, используйте `make install` или `./bin/music-syncer`.
+При установке через `go install ...@latest` версия берётся из метаданных
+модуля; поля `commit`/`built` могут быть `none`/`unknown`, это нормально.
 
 ### Windows (PowerShell)
 
