@@ -15,12 +15,11 @@ import (
 
 const (
 	oauthBaseURL = "https://oauth.yandex.ru"
-	// Credentials of the official Android app. They are public and are used
-	// by the Yandex Music API community for device-flow login. This is not an
-	// officially supported integration.
-	deviceClientID     = "23cabbbdc6cd418abb4b39c32c41195d"
-	deviceClientSecret = "REDACTED"
-	deviceName         = "music-syncer"
+	// Public client ID of the official Android app. Device flow also needs a
+	// client secret, supplied by the caller via YANDEX_MUSIC_CLIENT_SECRET or
+	// the --token alternative.
+	deviceClientID = "23cabbbdc6cd418abb4b39c32c41195d"
+	deviceName     = "music-syncer"
 )
 
 // DeviceAuthConfig controls the interactive Yandex device login.
@@ -54,7 +53,7 @@ func LoginDevice(ctx context.Context, cfg DeviceAuthConfig) (string, error) {
 		cfg.ClientID = deviceClientID
 	}
 	if cfg.ClientSecret == "" {
-		cfg.ClientSecret = deviceClientSecret
+		return "", errors.New("yandex: device login requires a client secret; set YANDEX_MUSIC_CLIENT_SECRET or use `--token`")
 	}
 	if cfg.DeviceName == "" {
 		cfg.DeviceName = deviceName

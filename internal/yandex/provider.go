@@ -382,6 +382,10 @@ func (p *Provider) RemoveTracks(ctx context.Context, playlist domain.Playlist, t
 		if err != nil {
 			return err
 		}
+		if current.TrackCount > 0 && len(current.Tracks) < current.TrackCount {
+			return fmt.Errorf("yandex: playlist %s returned %d of %d tracks; refusing to remove tracks from a partial playlist",
+				kind, len(current.Tracks), current.TrackCount)
+		}
 		ranges := deletionRanges(current.Tracks, remove)
 		if len(ranges) == 0 {
 			return nil

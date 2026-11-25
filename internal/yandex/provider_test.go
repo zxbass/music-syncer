@@ -366,6 +366,29 @@ func TestRemoveTracksRanges(t *testing.T) {
 	}
 }
 
+func TestRemoveTracksRejectsPartialPlaylist(t *testing.T) {
+	provider := newTestProvider(t, "123", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/users/123/playlists/42":
+			writeJSON(w, map[string]any{
+				"uid": 123, "kind": 42, "revision": 1, "trackCount": 2,
+				"tracks": []any{map[string]any{"id": 1, "albumId": 1}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	err := provider.RemoveTracks(context.Background(), domain.Playlist{
+		Provider: domain.Yandex, ID: "123:42", Kind: "42", OwnerID: "123",
+	}, []domain.Track{{ID: "1"}})
+	if err == nil {
+		t.Fatal("expected an error for a partial playlist")
+	}
+	if !strings.Contains(err.Error(), "partial playlist") {
+		t.Errorf("error = %v", err)
+	}
+}
+
 func TestLikesAndFollows(t *testing.T) {
 	var likedTracks, likedArtists []string
 	provider := newTestProvider(t, "123", func(w http.ResponseWriter, r *http.Request) {
@@ -414,6 +437,13 @@ func TestUnauthorizedMessage(t *testing.T) {
 	}
 }
 
+func TestDeviceLoginRequiresSecret(t *testing.T) {
+	_, err := LoginDevice(context.Background(), DeviceAuthConfig{Out: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "YANDEX_MUSIC_CLIENT_SECRET") {
+		t.Fatalf("err = %v, want a client-secret error", err)
+	}
+}
+
 func TestDeviceLogin(t *testing.T) {
 	var tokenCalls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -439,6 +469,7 @@ func TestDeviceLogin(t *testing.T) {
 	var out strings.Builder
 	token, err := LoginDevice(context.Background(), DeviceAuthConfig{
 		BaseURL: srv.URL, Out: &out, PollInterval: time.Millisecond,
+		ClientSecret: "test-secret",
 	})
 	if err != nil {
 		t.Fatal(err)

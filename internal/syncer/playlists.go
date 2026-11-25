@@ -128,11 +128,18 @@ func (e *Engine) syncOnePlaylist(ctx context.Context, src domain.Playlist, index
 		return result, nil
 	}
 
-	truncated := false
+	mirrorUnsafeReason := ""
 	if e.Options.Limit > 0 && len(srcTracks) > e.Options.Limit {
 		srcTracks = srcTracks[:e.Options.Limit]
-		truncated = true
+		mirrorUnsafeReason = "--limit truncated the source playlist"
 		result.Notes = append(result.Notes, fmt.Sprintf("limited to the first %d tracks", e.Options.Limit))
+	}
+	if src.TrackCount > len(srcTracks) {
+		reason := fmt.Sprintf("source returned %d of %d tracks", len(srcTracks), src.TrackCount)
+		result.Notes = append(result.Notes, reason)
+		if mirrorUnsafeReason == "" {
+			mirrorUnsafeReason = reason
+		}
 	}
 
 	target, found := e.findTargetPlaylist(src, index, &result)
@@ -184,7 +191,7 @@ func (e *Engine) syncOnePlaylist(ctx context.Context, src domain.Playlist, index
 		}
 	}
 	if e.Options.Mirror {
-		if err := e.applyPlaylistMirror(ctx, target, existing, desired, &result, truncated); err != nil {
+		if err := e.applyPlaylistMirror(ctx, target, existing, desired, &result, mirrorUnsafeReason); err != nil {
 			if isFatal(err) {
 				return result, err
 			}
@@ -277,7 +284,7 @@ func (e *Engine) applyPlaylistAdds(ctx context.Context, target domain.Playlist, 
 	return nil
 }
 
-func (e *Engine) applyPlaylistMirror(ctx context.Context, target domain.Playlist, existing []domain.Track, desired map[string]bool, result *PlaylistResult, truncated bool) error {
+func (e *Engine) applyPlaylistMirror(ctx context.Context, target domain.Playlist, existing []domain.Track, desired map[string]bool, result *PlaylistResult, unsafeReason string) error {
 	var extra []domain.Track
 	for _, track := range existing {
 		if track.ID != "" && !desired[track.ID] {
@@ -289,9 +296,8 @@ func (e *Engine) applyPlaylistMirror(ctx context.Context, target domain.Playlist
 	}
 
 	switch {
-	case truncated:
-		result.Notes = append(result.Notes,
-			"mirror skipped: --limit truncated the source playlist, so removing tracks would be unsafe")
+	case unsafeReason != "":
+		result.Notes = append(result.Notes, "mirror skipped: "+unsafeReason+", so removing tracks would be unsafe")
 	case result.Stats.Unmatched > 0 || result.Stats.Failed > 0:
 		result.Notes = append(result.Notes,
 			fmt.Sprintf("mirror skipped: %d unmatched/failed source tracks would be at risk", result.Stats.Unmatched+result.Stats.Failed))

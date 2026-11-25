@@ -50,6 +50,36 @@ func TestRetry429ReplaysBody(t *testing.T) {
 	}
 }
 
+func TestRetryWithNonReplayableBodyReturnsError(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL,
+		io.NopCloser(strings.NewReader("payload")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := testClient().Do(req)
+	if err == nil {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		t.Fatal("expected an error for a non-replayable body")
+	}
+	if resp != nil {
+		resp.Body.Close()
+		t.Fatalf("response = %v, want nil", resp)
+	}
+	if !strings.Contains(err.Error(), "replayable") {
+		t.Errorf("error = %v", err)
+	}
+}
+
 func TestPostNotRetriedOn500(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

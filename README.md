@@ -131,41 +131,43 @@ user-read-recently-played
 
 ## Настройка Яндекс.Музыки
 
-Основной способ — OAuth Device Flow:
-
-```bash
-music-syncer auth yandex
-```
-
-Команда покажет URL и короткий код. Подтвердите вход на любом устройстве —
-токен сохранится автоматически.
-
-Альтернатива: получить токен вручную и передать его:
-
-```bash
-music-syncer auth yandex --token y0_...
-```
-
-Токен можно получить, открыв в браузере:
+Основной способ — личный OAuth-токен. Получите его, открыв в браузере:
 
 ```
 https://oauth.yandex.ru/authorize?response_type=token&client_id=23cabbbdc6cd418abb4b39c32c41195d
 ```
 
 После подтверждения Яндекс перенаправит на `music.yandex.ru` с параметром
-`access_token` во фрагменте URL. Скопируйте значение.
+`access_token` во фрагменте URL. Скопируйте значение и передайте его:
 
-Также поддерживается переменная окружения:
+```bash
+music-syncer auth yandex --token y0_...
+```
+
+Или сохраните в переменной окружения:
 
 ```bash
 export YANDEX_MUSIC_TOKEN=y0_...
+music-syncer auth yandex
 ```
+
+Дополнительно поддерживается OAuth Device Flow. Для него нужен client secret
+вашего OAuth-приложения (в репозитории он не хранится):
+
+```bash
+export YANDEX_MUSIC_CLIENT_ID=...
+export YANDEX_MUSIC_CLIENT_SECRET=...
+music-syncer auth yandex
+```
+
+Команда покажет URL и короткий код. Подтвердите вход на любом устройстве —
+токен сохранится автоматически.
 
 ## Быстрый старт
 
 ```bash
 # 1. Подключить аккаунты
-music-syncer auth yandex
+music-syncer auth yandex --token y0_...
 music-syncer auth spotify --client-id ВАШ_CLIENT_ID
 music-syncer auth status
 
@@ -327,6 +329,8 @@ music-syncer cache clear
 - `MUSIC_SYNCER_CONFIG` — то же через переменную окружения;
 - `MUSIC_SYNCER_STATE` — отдельный путь к `state.json`;
 - `YANDEX_MUSIC_TOKEN` — переопределяет токен Яндекса;
+- `YANDEX_MUSIC_CLIENT_ID` и `YANDEX_MUSIC_CLIENT_SECRET` — необязательные
+  параметры для OAuth Device Flow Яндекса;
 - `SPOTIFY_CLIENT_ID` — client ID по умолчанию.
 
 Пример конфигурации: [`config.example.yaml`](config.example.yaml).

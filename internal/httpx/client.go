@@ -67,7 +67,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 			// strings.Reader or bytes.Buffer. If it is missing we cannot safely
 			// replay the request.
 			if req.Body != nil && req.GetBody == nil {
-				return nil, lastErr
+				return nil, errors.New("cannot retry request: body is not replayable")
 			}
 			if req.Body != nil {
 				body, err := req.GetBody()

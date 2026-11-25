@@ -31,26 +31,35 @@ func (a *App) authYandexCmd() *cobra.Command {
 		Short: "Connect Yandex Music (device flow or a pasted token)",
 		Long: `Connect Yandex Music.
 
-By default music-syncer starts the Yandex OAuth device flow: it prints a URL
-and a short code, and waits for you to confirm the login on any device.
+The recommended method is a personal Yandex Music token passed with --token or
+the YANDEX_MUSIC_TOKEN environment variable. See the README for instructions.
 
-You can also pass an existing Yandex Music token with --token or the
-YANDEX_MUSIC_TOKEN environment variable. This is an unofficial API; use it at
-your own risk.`,
-		Example: `  music-syncer auth yandex
-  music-syncer auth yandex --token y0_Ag...`,
+Device flow is also supported: set YANDEX_MUSIC_CLIENT_SECRET (and optionally
+YANDEX_MUSIC_CLIENT_ID) and music-syncer will print a URL and a short code.
+This is an unofficial API; use it at your own risk.`,
+		Example: `  music-syncer auth yandex --token y0_Ag...
+  YANDEX_MUSIC_CLIENT_SECRET=... music-syncer auth yandex`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			token := strings.TrimSpace(tokenFlag)
 			if token == "" {
 				token = strings.TrimSpace(os.Getenv("YANDEX_MUSIC_TOKEN"))
 			}
 			if token == "" {
+				clientSecret := strings.TrimSpace(os.Getenv("YANDEX_MUSIC_CLIENT_SECRET"))
+				if clientSecret == "" {
+					return errors.New("Yandex Music device login requires YANDEX_MUSIC_CLIENT_SECRET.\n\n" +
+						"Use a personal token instead:\n" +
+						"  music-syncer auth yandex --token y0_...\n" +
+						"See the README for how to obtain it.")
+				}
 				ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 				defer cancel()
 				var err error
 				token, err = yandex.LoginDevice(ctx, yandex.DeviceAuthConfig{
-					In:  cmd.InOrStdin(),
-					Out: a.out,
+					ClientID:     strings.TrimSpace(os.Getenv("YANDEX_MUSIC_CLIENT_ID")),
+					ClientSecret: clientSecret,
+					In:           cmd.InOrStdin(),
+					Out:          a.out,
 				})
 				if err != nil {
 					return err

@@ -545,6 +545,44 @@ func TestLimit(t *testing.T) {
 	}
 }
 
+func TestMirrorSkippedWhenSourceIsIncomplete(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.addPlaylist("Road Trip", track(domain.Yandex, "y1", "Song One", "Artist", 180000))
+	// Simulate an API that reports more tracks than it returned.
+	src.playlists[0].TrackCount = 2
+	dst := newFake(domain.Spotify)
+	dst.catalog = []domain.Track{track(domain.Spotify, "s1", "Song One", "Artist", 180000)}
+	existing := dst.addPlaylist("Road Trip",
+		track(domain.Spotify, "s1", "Song One", "Artist", 180000),
+		track(domain.Spotify, "extra", "Extra Song", "Artist", 180000),
+	)
+
+	engine, _ := newTestEngine(t, src, dst, Options{
+		Categories: Categories{Playlists: true},
+		Mirror:     true,
+	})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := report.Playlists[0]
+	if res.Removed != 0 {
+		t.Errorf("removed = %d, want 0 for an incomplete source", res.Removed)
+	}
+	if len(dst.playlistTracks[existing.ID]) != 2 {
+		t.Error("mirror removed tracks from an incomplete source")
+	}
+	found := false
+	for _, note := range res.Notes {
+		if strings.Contains(note, "source returned") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing incomplete-source note: %v", res.Notes)
+	}
+}
+
 func TestMirrorSkippedWhenLimited(t *testing.T) {
 	src := newFake(domain.Yandex)
 	src.addPlaylist("Road Trip",

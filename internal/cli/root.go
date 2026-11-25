@@ -57,7 +57,11 @@ the official Web API with PKCE.`,
 			app.cfgPath = path
 			cfg, err := config.Load(path)
 			if err != nil {
-				return err
+				if !isConfigOptional(cmd) {
+					return err
+				}
+				cmd.PrintErrln("warning: ignoring invalid config:", err)
+				cfg = config.Default()
 			}
 			app.cfg = cfg
 			app.out = cmd.OutOrStdout()
@@ -99,6 +103,15 @@ the official Web API with PKCE.`,
 		app.versionCmd(),
 	)
 	return root
+}
+
+func isConfigOptional(cmd *cobra.Command) bool {
+	switch cmd.CommandPath() {
+	case "music-syncer version", "music-syncer cache clear":
+		return true
+	default:
+		return false
+	}
 }
 
 // Execute runs the CLI.

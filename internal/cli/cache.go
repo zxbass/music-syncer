@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -36,14 +38,11 @@ track again and may create new playlists if names no longer disambiguate the
 previous target playlists. Playlists and likes on both services are not
 touched.`,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				store, err := a.openStore()
-				if err != nil {
+				path := a.statePath()
+				if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 					return err
 				}
-				if err := store.Clear(); err != nil {
-					return err
-				}
-				fmt.Fprintln(a.out, "Match cache cleared.")
+				fmt.Fprintf(a.out, "Match cache cleared (%s).\n", path)
 				return nil
 			},
 		},
