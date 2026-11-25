@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -166,7 +167,14 @@ func Dir(path string) string { return filepath.Dir(path) }
 
 // WarnIfPermissionsAreLoose warns when the config contains secrets and can be
 // read by other users. It is intentionally best-effort.
+//
+// Windows uses ACLs rather than POSIX permission bits, so the mode check is
+// skipped there; the file lives in the user's profile and is protected by its
+// ACL.
 func WarnIfPermissionsAreLoose(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

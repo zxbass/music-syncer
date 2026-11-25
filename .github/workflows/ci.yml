@@ -39,3 +39,6 @@ jobs:
 
       - name: Build
         run: go build -trimpath -o /tmp/music-syncer ./cmd/music-syncer
+
+      - name: Cross-compile for Windows
+        run: GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/music-syncer.exe ./cmd/music-syncer

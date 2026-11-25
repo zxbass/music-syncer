@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -75,6 +76,9 @@ func TestDefaultPathFromEnv(t *testing.T) {
 }
 
 func TestPermissionsWarning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses ACLs instead of POSIX permission bits")
+	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := Save(path, Default()); err != nil {
 		t.Fatal(err)
