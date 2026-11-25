@@ -390,13 +390,16 @@ func TestRemoveTracksRejectsPartialPlaylist(t *testing.T) {
 }
 
 func TestLikesAndFollows(t *testing.T) {
-	var likedTracks, likedArtists []string
+	var likedTracks, unlikedTracks, likedArtists []string
 	provider := newTestProvider(t, "123", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		switch r.URL.Path {
 		case "/users/123/likes/tracks/add-multiple":
 			likedTracks = append(likedTracks, r.PostForm["track-ids"]...)
 			writeJSON(w, map[string]any{"revision": 1})
+		case "/users/123/likes/tracks/remove":
+			unlikedTracks = append(unlikedTracks, r.PostForm["track-ids"]...)
+			writeJSON(w, map[string]any{"revision": 2})
 		case "/users/123/likes/artists/add-multiple":
 			likedArtists = append(likedArtists, r.PostForm["artist-ids"]...)
 			http.Error(w, "not json", 200)
@@ -409,6 +412,12 @@ func TestLikesAndFollows(t *testing.T) {
 	}
 	if len(likedTracks) != 2 || likedTracks[0] != "1" {
 		t.Errorf("liked tracks = %v", likedTracks)
+	}
+	if err := provider.UnlikeTracks(context.Background(), []domain.Track{{ID: "2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(unlikedTracks) != 1 || unlikedTracks[0] != "2" {
+		t.Errorf("unliked tracks = %v", unlikedTracks)
 	}
 	// The artist endpoint returns a plain "ok" string in the real API; our
 	// client decodes with out=nil, so any 2xx body is fine.

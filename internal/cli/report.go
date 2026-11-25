@@ -37,36 +37,38 @@ func printTransferReport(w io.Writer, report *syncer.Report) {
 	fmt.Fprintf(w, "\n%s: %s → %s\n", title, report.Source.DisplayName(), report.Target.DisplayName())
 	fmt.Fprintf(w, "Duration: %s\n", report.FinishedAt.Sub(report.StartedAt).Round(time.Second))
 
-	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "\nPLAYLIST\tTRACKS\tADDED\tEXISTING\tUNMATCHED\tDEFERRED\tREMOVED\tSTATUS")
-	for _, pl := range report.Playlists {
-		status := "ok"
-		switch {
-		case pl.Error != "":
-			status = "ERROR"
-		case pl.Created:
-			status = "created"
-		case pl.WouldCreate && report.DryRun:
-			status = "would create"
-		case len(pl.Notes) > 0:
-			status = "ok*"
+	if len(report.Playlists) > 0 {
+		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "\nPLAYLIST\tTRACKS\tADDED\tEXISTING\tUNMATCHED\tDEFERRED\tREMOVED\tSTATUS")
+		for _, pl := range report.Playlists {
+			status := "ok"
+			switch {
+			case pl.Error != "":
+				status = "ERROR"
+			case pl.Created:
+				status = "created"
+			case pl.WouldCreate && report.DryRun:
+				status = "would create"
+			case len(pl.Notes) > 0:
+				status = "ok*"
+			}
+			name := pl.SourceName
+			if name == "" {
+				name = pl.TargetName
+			}
+			fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+				name, pl.Stats.Source, pl.Stats.Added, pl.Stats.Existing, pl.Stats.Unmatched,
+				pl.Stats.Deferred, pl.Removed, status)
 		}
-		name := pl.SourceName
-		if name == "" {
-			name = pl.TargetName
-		}
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
-			name, pl.Stats.Source, pl.Stats.Added, pl.Stats.Existing, pl.Stats.Unmatched,
-			pl.Stats.Deferred, pl.Removed, status)
-	}
-	_ = tw.Flush()
+		_ = tw.Flush()
 
-	for _, pl := range report.Playlists {
-		for _, note := range pl.Notes {
-			fmt.Fprintf(w, "  note [%s]: %s\n", pl.SourceName, note)
-		}
-		if pl.Error != "" {
-			fmt.Fprintf(w, "  error [%s]: %s\n", pl.SourceName, pl.Error)
+		for _, pl := range report.Playlists {
+			for _, note := range pl.Notes {
+				fmt.Fprintf(w, "  note [%s]: %s\n", pl.SourceName, note)
+			}
+			if pl.Error != "" {
+				fmt.Fprintf(w, "  error [%s]: %s\n", pl.SourceName, pl.Error)
+			}
 		}
 	}
 
@@ -84,6 +86,12 @@ func printTransferReport(w io.Writer, report *syncer.Report) {
 		fmt.Fprintf(w, "\nLiked tracks%s: %d source, %d added, %d already present, %d unmatched, %d deferred, %d failed\n",
 			playlist, report.Likes.Source, report.Likes.Added, report.Likes.Existing,
 			report.Likes.Unmatched, report.Likes.Deferred, report.Likes.Failed)
+	}
+	if report.NativeLikesRemoved > 0 {
+		fmt.Fprintf(w, "Removed from native liked songs: %d\n", report.NativeLikesRemoved)
+	}
+	if report.NativeLikesWouldRemove > 0 {
+		fmt.Fprintf(w, "Would remove from native liked songs: %d\n", report.NativeLikesWouldRemove)
 	}
 	if report.Artists != nil {
 		fmt.Fprintf(w, "Artists: %d source, %d followed, %d already followed, %d unmatched, %d deferred, %d failed\n",

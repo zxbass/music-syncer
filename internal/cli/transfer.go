@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/zxbass/music-syncer/internal/httpx"
 	"github.com/zxbass/music-syncer/internal/syncer"
 )
 
@@ -96,6 +95,7 @@ library instead of exhausting the provider quota in one go.`,
 				return fmt.Errorf("check target account: %w", err)
 			}
 
+			fmt.Fprintf(a.out, "music-syncer %s\n", Version)
 			fmt.Fprintf(a.out, "Source: %s\n", accountLabel(srcAcc))
 			fmt.Fprintf(a.out, "Target: %s\n", accountLabel(dstAcc))
 			fmt.Fprintf(a.out, "Categories: %s\n", categories.String())
@@ -147,15 +147,7 @@ library instead of exhausting the provider quota in one go.`,
 				fmt.Fprintf(a.out, "\nReport written to %s\n", reportPath)
 			}
 			if runErr != nil {
-				switch {
-				case errors.Is(runErr, httpx.ErrQuotaExceeded):
-					return fmt.Errorf("%w\nProvider quota is exhausted. Progress is saved in %s; rerun the same command after the quota resets to continue without duplicates.",
-						runErr, a.statePath())
-				case errors.Is(runErr, httpx.ErrRateLimited):
-					return fmt.Errorf("%w\nProvider rate limit reached. Progress is saved in %s; rerun the same command later to continue without duplicates.",
-						runErr, a.statePath())
-				}
-				return runErr
+				return a.wrapTransferError(runErr)
 			}
 			if report != nil && len(report.Errors) > 0 {
 				return fmt.Errorf("transfer completed with %s%s",

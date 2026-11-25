@@ -81,6 +81,10 @@ type Options struct {
 	// unlimited. Cached matches do not consume the budget, so repeated runs
 	// make forward progress without exhausting a provider's daily quota.
 	SearchBatch int
+	// MigrateLikes moves matched source likes from the target's native liked
+	// tracks into the favorites playlist. It is only used by the
+	// migrate-likes command.
+	MigrateLikes bool
 }
 
 // TrackStats summarizes a track collection sync.
@@ -148,21 +152,23 @@ type PlaylistResult struct {
 
 // Report is a complete synchronization report.
 type Report struct {
-	StartedAt         time.Time            `json:"started_at"`
-	FinishedAt        time.Time            `json:"finished_at"`
-	Source            domain.Name          `json:"source"`
-	Target            domain.Name          `json:"target"`
-	DryRun            bool                 `json:"dry_run"`
-	Categories        string               `json:"categories"`
-	SearchBatch       int                  `json:"search_batch,omitempty"`
-	BatchLimitReached bool                 `json:"batch_limit_reached,omitempty"`
-	Playlists         []PlaylistResult     `json:"playlists,omitempty"`
-	Likes             *TrackStats          `json:"likes,omitempty"`
-	LikesPlaylist     *LikesPlaylistResult `json:"likes_playlist,omitempty"`
-	Artists           *ArtistStats         `json:"artists,omitempty"`
-	Errors            []string             `json:"errors,omitempty"`
-	UnmatchedLikes    []Unmatched          `json:"unmatched_likes,omitempty"`
-	UnmatchedArtists  []UnmatchedArtist    `json:"unmatched_artists,omitempty"`
+	StartedAt              time.Time            `json:"started_at"`
+	FinishedAt             time.Time            `json:"finished_at"`
+	Source                 domain.Name          `json:"source"`
+	Target                 domain.Name          `json:"target"`
+	DryRun                 bool                 `json:"dry_run"`
+	Categories             string               `json:"categories"`
+	SearchBatch            int                  `json:"search_batch,omitempty"`
+	BatchLimitReached      bool                 `json:"batch_limit_reached,omitempty"`
+	Playlists              []PlaylistResult     `json:"playlists,omitempty"`
+	Likes                  *TrackStats          `json:"likes,omitempty"`
+	LikesPlaylist          *LikesPlaylistResult `json:"likes_playlist,omitempty"`
+	NativeLikesRemoved     int                  `json:"native_likes_removed,omitempty"`
+	NativeLikesWouldRemove int                  `json:"native_likes_would_remove,omitempty"`
+	Artists                *ArtistStats         `json:"artists,omitempty"`
+	Errors                 []string             `json:"errors,omitempty"`
+	UnmatchedLikes         []Unmatched          `json:"unmatched_likes,omitempty"`
+	UnmatchedArtists       []UnmatchedArtist    `json:"unmatched_artists,omitempty"`
 }
 
 // Engine transfers a library between two providers.
@@ -211,6 +217,9 @@ func (e *Engine) Run(ctx context.Context) (*Report, error) {
 	if e.Options.SearchBatch < 0 {
 		return nil, errors.New("syncer: search batch cannot be negative")
 	}
+	if e.Options.MigrateLikes && !e.Options.Categories.Likes {
+		return nil, errors.New("syncer: migrate likes requires the likes category")
+	}
 	if e.Log == nil {
 		e.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -238,12 +247,18 @@ func (e *Engine) Run(ctx context.Context) (*Report, error) {
 		}
 	}
 	if !e.deferred && e.Options.Categories.Likes {
-		if err := e.syncLikes(ctx); err != nil {
-			if isFatal(err) {
-				return e.abort(err)
+		var likeErr error
+		if e.Options.MigrateLikes {
+			likeErr = e.migrateLikes(ctx)
+		} else {
+			likeErr = e.syncLikes(ctx)
+		}
+		if likeErr != nil {
+			if isFatal(likeErr) {
+				return e.abort(likeErr)
 			}
-			e.recordError("liked tracks", err)
-			errs = append(errs, err)
+			e.recordError("liked tracks", likeErr)
+			errs = append(errs, likeErr)
 		}
 	}
 	if !e.deferred && e.Options.Categories.Artists {
@@ -602,10 +617,10 @@ func targetPlaylistName(prefix, name string) string {
 	return truncateText(value, 100)
 }
 
-// favoritesPlaylistName names the playlist that receives liked tracks. The
+// FavoritesPlaylistName names the playlist that receives liked tracks. The
 // source service is used so the playlist is not confused with the target's
 // native favorites.
-func favoritesPlaylistName(source domain.Name) string {
+func FavoritesPlaylistName(source domain.Name) string {
 	switch source {
 	case domain.Yandex:
 		return "Yandex favorites"

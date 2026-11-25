@@ -406,6 +406,65 @@ func TestLikeAndFollowFallbacks(t *testing.T) {
 	}
 }
 
+func TestUnlikeTracksBatches(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		batches []int
+	)
+	provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/me/library" {
+			http.NotFound(w, r)
+			return
+		}
+		uris := r.URL.Query().Get("uris")
+		mu.Lock()
+		batches = append(batches, len(strings.Split(uris, ",")))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	var tracks []domain.Track
+	for i := 0; i < 45; i++ {
+		tracks = append(tracks, domain.Track{ID: fmt.Sprintf("t%d", i)})
+	}
+	if err := provider.UnlikeTracks(context.Background(), tracks); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := append([]int(nil), batches...)
+	mu.Unlock()
+	want := []int{40, 5}
+	if len(got) != len(want) {
+		t.Fatalf("batches = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("batches = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestUnlikeTracksLegacyFallback(t *testing.T) {
+	var ids string
+	provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/me/library":
+			http.NotFound(w, r)
+		case "/v1/me/tracks":
+			ids = r.URL.Query().Get("ids")
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	if err := provider.UnlikeTracks(context.Background(), []domain.Track{{ID: "t1"}, {ID: "t2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if ids != "t1,t2" {
+		t.Errorf("ids = %q", ids)
+	}
+}
+
 func TestLikeTracksLegacyFallback(t *testing.T) {
 	var ids string
 	provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {

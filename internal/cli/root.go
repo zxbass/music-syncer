@@ -41,6 +41,7 @@ the official Web API with PKCE.`,
   music-syncer transfer --from yandex --to spotify --dry-run
   music-syncer transfer --from yandex --to spotify --only playlists,likes,artists
   music-syncer transfer --from spotify --to yandex --only likes
+  music-syncer migrate-likes --dry-run
   music-syncer playlists --provider spotify
   music-syncer export --provider yandex --output yandex-backup`,
 		SilenceUsage:  true,
@@ -96,6 +97,7 @@ the official Web API with PKCE.`,
 	root.AddCommand(
 		app.authCmd(),
 		app.transferCmd(),
+		app.migrateLikesCmd(),
 		app.playlistsCmd(),
 		app.exportCmd(),
 		app.matchCmd(),

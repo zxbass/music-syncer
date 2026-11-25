@@ -13,6 +13,7 @@ import (
 
 	"github.com/zxbass/music-syncer/internal/config"
 	"github.com/zxbass/music-syncer/internal/domain"
+	"github.com/zxbass/music-syncer/internal/httpx"
 	"github.com/zxbass/music-syncer/internal/matcher"
 	"github.com/zxbass/music-syncer/internal/spotify"
 	"github.com/zxbass/music-syncer/internal/store"
@@ -233,6 +234,19 @@ func writeJSONFile(path string, value any) error {
 		}
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+// wrapTransferError adds resume instructions for rate and quota limits.
+func (a *App) wrapTransferError(err error) error {
+	switch {
+	case errors.Is(err, httpx.ErrQuotaExceeded):
+		return fmt.Errorf("%w\nProvider quota is exhausted. Progress is saved in %s; rerun the same command after the quota resets to continue without duplicates.",
+			err, a.statePath())
+	case errors.Is(err, httpx.ErrRateLimited):
+		return fmt.Errorf("%w\nProvider rate limit reached. Progress is saved in %s; rerun the same command later to continue without duplicates.",
+			err, a.statePath())
+	}
+	return err
 }
 
 func formatDuration(ms int) string {

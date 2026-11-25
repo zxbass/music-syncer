@@ -134,6 +134,27 @@ func (p *Provider) LikeTracks(ctx context.Context, tracks []domain.Track) error 
 	return nil
 }
 
+// UnlikeTracks implements domain.Provider.
+func (p *Provider) UnlikeTracks(ctx context.Context, tracks []domain.Track) error {
+	uid, err := p.ensureUID(ctx)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for _, t := range tracks {
+		if t.ID != "" {
+			ids = append(ids, t.ID)
+		}
+	}
+	for start := 0; start < len(ids); start += 100 {
+		end := min(start+100, len(ids))
+		if err := p.client.removeLikedTracks(ctx, uid, ids[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // FollowArtists implements domain.Provider.
 func (p *Provider) FollowArtists(ctx context.Context, artists []domain.Artist) error {
 	uid, err := p.ensureUID(ctx)

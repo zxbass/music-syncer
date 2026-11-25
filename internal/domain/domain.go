@@ -170,6 +170,7 @@ type Provider interface {
 	RemoveTracks(ctx context.Context, playlist Playlist, tracks []Track) error
 
 	LikeTracks(ctx context.Context, tracks []Track) error
+	UnlikeTracks(ctx context.Context, tracks []Track) error
 	FollowArtists(ctx context.Context, artists []Artist) error
 }
 

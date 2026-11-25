@@ -429,6 +429,25 @@ func (p *Provider) LikeTracks(ctx context.Context, tracks []domain.Track) error 
 	})
 }
 
+// UnlikeTracks implements domain.Provider. It removes tracks from the native
+// Spotify library using the generic endpoint, with the entity-specific
+// endpoint as a fallback for extended quota accounts.
+func (p *Provider) UnlikeTracks(ctx context.Context, tracks []domain.Track) error {
+	var uris []string
+	for _, t := range tracks {
+		if t.ID != "" {
+			uris = append(uris, "spotify:track:"+t.ID)
+		}
+	}
+	return p.removeLibraryURIs(ctx, uris, func(batch []string) error {
+		ids := make([]string, 0, len(batch))
+		for _, uri := range batch {
+			ids = append(ids, strings.TrimPrefix(uri, "spotify:track:"))
+		}
+		return p.client.Delete(ctx, "/me/tracks", url.Values{"ids": {strings.Join(ids, ",")}}, nil)
+	})
+}
+
 // FollowArtists implements domain.Provider.
 func (p *Provider) FollowArtists(ctx context.Context, artists []domain.Artist) error {
 	var uris []string
@@ -457,6 +476,24 @@ func (p *Provider) saveLibraryURIs(ctx context.Context, uris []string, legacy fu
 		batch := uris[start:end]
 		q := url.Values{"uris": {strings.Join(batch, ",")}}
 		err := p.client.Put(ctx, "/me/library", q, nil)
+		if isUnsupported(err) {
+			err = legacy(batch)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeLibraryURIs removes URIs in batches accepted by the generic library
+// endpoint. legacy is called for each batch when the endpoint is unavailable.
+func (p *Provider) removeLibraryURIs(ctx context.Context, uris []string, legacy func([]string) error) error {
+	for start := 0; start < len(uris); start += libraryBatchSize {
+		end := min(start+libraryBatchSize, len(uris))
+		batch := uris[start:end]
+		q := url.Values{"uris": {strings.Join(batch, ",")}}
+		err := p.client.Delete(ctx, "/me/library", q, nil)
 		if isUnsupported(err) {
 			err = legacy(batch)
 		}

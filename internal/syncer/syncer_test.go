@@ -31,12 +31,14 @@ type fakeProvider struct {
 	searchCalls       int
 	artistSearchCalls int
 	addErr            error
+	unlikeErr         error
 
-	created   []string
-	added     []domain.Track
-	removed   []domain.Track
-	likedAdd  []domain.Track
-	followAdd []domain.Artist
+	created     []string
+	added       []domain.Track
+	removed     []domain.Track
+	likedAdd    []domain.Track
+	likedRemove []domain.Track
+	followAdd   []domain.Artist
 }
 
 func newFake(name domain.Name) *fakeProvider {
@@ -148,6 +150,26 @@ func (f *fakeProvider) RemoveTracks(_ context.Context, pl domain.Playlist, track
 func (f *fakeProvider) LikeTracks(_ context.Context, tracks []domain.Track) error {
 	f.likedAdd = append(f.likedAdd, tracks...)
 	f.liked = append(f.liked, tracks...)
+	return nil
+}
+
+func (f *fakeProvider) UnlikeTracks(_ context.Context, tracks []domain.Track) error {
+	if f.unlikeErr != nil {
+		return f.unlikeErr
+	}
+	remove := map[string]bool{}
+	for _, t := range tracks {
+		remove[t.ID] = true
+	}
+	kept := f.liked[:0]
+	for _, t := range f.liked {
+		if remove[t.ID] {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	f.liked = kept
+	f.likedRemove = append(f.likedRemove, tracks...)
 	return nil
 }
 
@@ -686,6 +708,131 @@ func TestLikesPlaylistUsesSourceServiceName(t *testing.T) {
 	}
 	if len(dst.created) != 1 || dst.created[0] != "Spotify favorites" {
 		t.Errorf("created = %v", dst.created)
+	}
+}
+
+func TestMigrateLikesMovesNativeLikesToFavorites(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.liked = []domain.Track{
+		track(domain.Yandex, "y1", "Song One", "Artist", 180000),
+		track(domain.Yandex, "y2", "Song Two", "Artist", 180000),
+		track(domain.Yandex, "y3", "Song Three", "Artist", 180000),
+	}
+	dst := newFake(domain.Spotify)
+	dst.liked = []domain.Track{
+		track(domain.Spotify, "s1", "Song One", "Artist", 180000),
+		track(domain.Spotify, "s2", "Song Two", "Artist", 180000),
+		track(domain.Spotify, "sx", "Unrelated Native Like", "Other", 120000),
+	}
+	dst.catalog = []domain.Track{
+		track(domain.Spotify, "s1", "Song One", "Artist", 180000),
+		track(domain.Spotify, "s2", "Song Two", "Artist", 180000),
+		track(domain.Spotify, "s3", "Song Three", "Artist", 180000),
+	}
+
+	engine, st := newTestEngine(t, src, dst, Options{
+		Categories:   Categories{Likes: true},
+		MigrateLikes: true,
+	})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Likes.Source != 3 || report.Likes.Added != 3 || report.Likes.Existing != 0 {
+		t.Errorf("likes stats = %+v, want source 3, added 3", report.Likes)
+	}
+	if report.NativeLikesRemoved != 2 {
+		t.Errorf("native removes = %d, want 2", report.NativeLikesRemoved)
+	}
+	if len(dst.liked) != 1 || dst.liked[0].ID != "sx" {
+		t.Errorf("native liked tracks = %+v, want only the unrelated like", dst.liked)
+	}
+	if len(dst.likedRemove) != 2 {
+		t.Errorf("unliked = %+v, want 2 tracks", dst.likedRemove)
+	}
+	favorites := report.LikesPlaylist.TargetID
+	if got := len(dst.playlistTracks[favorites]); got != 3 {
+		t.Errorf("favorites playlist has %d tracks, want 3", got)
+	}
+
+	// A second run must not re-add favorites or remove anything else.
+	next := &Engine{
+		Source:  src,
+		Target:  dst,
+		Matcher: engine.Matcher,
+		Store:   st,
+		Log:     engine.Log,
+		Options: Options{Categories: Categories{Likes: true}, MigrateLikes: true},
+	}
+	second, err := next.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Likes.Existing != 3 || second.Likes.Added != 0 || second.NativeLikesRemoved != 0 {
+		t.Errorf("second run stats = likes %+v, removed %d", second.Likes, second.NativeLikesRemoved)
+	}
+	if got := len(dst.playlistTracks[favorites]); got != 3 {
+		t.Errorf("second run left %d favorites tracks, want 3", got)
+	}
+}
+
+func TestMigrateLikesDryRunDoesNotTouchNativeLikes(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.liked = []domain.Track{
+		track(domain.Yandex, "y1", "Song One", "Artist", 180000),
+		track(domain.Yandex, "y2", "Song Two", "Artist", 180000),
+	}
+	dst := newFake(domain.Spotify)
+	dst.liked = []domain.Track{track(domain.Spotify, "s1", "Song One", "Artist", 180000)}
+	dst.catalog = []domain.Track{
+		track(domain.Spotify, "s1", "Song One", "Artist", 180000),
+		track(domain.Spotify, "s2", "Song Two", "Artist", 180000),
+	}
+
+	engine, _ := newTestEngine(t, src, dst, Options{
+		Categories:   Categories{Likes: true},
+		MigrateLikes: true,
+		DryRun:       true,
+	})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Likes.Added != 2 || report.NativeLikesWouldRemove != 1 {
+		t.Errorf("stats = %+v, would remove %d", report.Likes, report.NativeLikesWouldRemove)
+	}
+	if len(dst.likedRemove) != 0 || len(dst.liked) != 1 {
+		t.Errorf("dry run changed native likes: liked=%+v removed=%+v", dst.liked, dst.likedRemove)
+	}
+	if len(dst.playlistTracks) != 0 {
+		t.Errorf("dry run created playlist tracks: %+v", dst.playlistTracks)
+	}
+}
+
+func TestMigrateLikesKeepsNativeLikesWhenFavoritesFail(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.liked = []domain.Track{track(domain.Yandex, "y1", "Song One", "Artist", 180000)}
+	dst := newFake(domain.Spotify)
+	dst.liked = []domain.Track{track(domain.Spotify, "s1", "Song One", "Artist", 180000)}
+	dst.catalog = []domain.Track{track(domain.Spotify, "s1", "Song One", "Artist", 180000)}
+	dst.addErr = errors.New("cannot add")
+
+	engine, _ := newTestEngine(t, src, dst, Options{
+		Categories:   Categories{Likes: true},
+		MigrateLikes: true,
+	})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.NativeLikesRemoved != 0 || len(dst.likedRemove) != 0 {
+		t.Errorf("native likes were removed after a failed add: %+v", dst.likedRemove)
+	}
+	if len(dst.liked) != 1 {
+		t.Errorf("native likes changed after a failed add: %+v", dst.liked)
+	}
+	if len(report.Errors) == 0 {
+		t.Error("expected an add error in the report")
 	}
 }
 

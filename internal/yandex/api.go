@@ -140,6 +140,17 @@ func (c *Client) addLikedTracks(ctx context.Context, uid string, ids []string) e
 	return c.request(ctx, "POST", "/users/"+url.PathEscape(uid)+"/likes/tracks/add-multiple", nil, form, nil)
 }
 
+func (c *Client) removeLikedTracks(ctx context.Context, uid string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	form := url.Values{}
+	for _, id := range ids {
+		form.Add("track-ids", id)
+	}
+	return c.request(ctx, "POST", "/users/"+url.PathEscape(uid)+"/likes/tracks/remove", nil, form, nil)
+}
+
 func (c *Client) addLikedArtists(ctx context.Context, uid string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
