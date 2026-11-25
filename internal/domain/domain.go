@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Name identifies a music provider.
@@ -76,6 +77,9 @@ type Track struct {
 	ISRC       string   `json:"isrc,omitempty"`
 	Explicit   bool     `json:"explicit,omitempty"`
 	URL        string   `json:"url,omitempty"`
+	// AddedAt is set for tracks loaded from a provider's native liked
+	// collection when the provider exposes the save timestamp.
+	AddedAt *time.Time `json:"added_at,omitempty"`
 }
 
 // ArtistLine joins the track artists with a comma.

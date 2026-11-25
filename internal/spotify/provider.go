@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zxbass/music-syncer/internal/domain"
 )
@@ -187,7 +188,13 @@ func (p *Provider) LikedTracks(ctx context.Context, limit int) ([]domain.Track, 
 			if t == nil || t.IsLocal || t.ID == "" {
 				continue
 			}
-			result = append(result, t.toDomain())
+			tr := t.toDomain()
+			if item.AddedAt != "" {
+				if added, err := time.Parse(time.RFC3339, item.AddedAt); err == nil {
+					tr.AddedAt = &added
+				}
+			}
+			result = append(result, tr)
 			if limit > 0 && len(result) >= limit {
 				return result, nil
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/zxbass/music-syncer/internal/domain"
 )
@@ -175,6 +176,23 @@ func (e *Engine) migrateLikes(ctx context.Context) error {
 
 	favoriteIDs := trackIDSet(favoriteTracks)
 	nativeIDs := trackIDSet(nativeLikes)
+	nativeAddedAt := make(map[string]*time.Time, len(nativeLikes))
+	for _, t := range nativeLikes {
+		if t.ID != "" {
+			nativeAddedAt[t.ID] = t.AddedAt
+		}
+	}
+	if !e.Options.RemoveAllNativeLikes && len(nativeLikes) > 0 {
+		withTimestamp := 0
+		for _, t := range nativeLikes {
+			if t.AddedAt != nil {
+				withTimestamp++
+			}
+		}
+		if withTimestamp == 0 {
+			return errors.New("target native likes do not expose added_at; use --all-native to move all matching likes")
+		}
+	}
 	knownIDs := make(map[string]bool, len(favoriteIDs)+len(nativeIDs))
 	for id := range favoriteIDs {
 		knownIDs[id] = true
@@ -222,7 +240,7 @@ func (e *Engine) migrateLikes(ctx context.Context) error {
 		} else {
 			newFavorites = append(newFavorites, res.Track)
 		}
-		if nativeIDs[res.Track.ID] {
+		if nativeIDs[res.Track.ID] && e.nativeLikeInWindow(nativeAddedAt[res.Track.ID]) {
 			removeCandidates = append(removeCandidates, res.Track)
 		}
 	}

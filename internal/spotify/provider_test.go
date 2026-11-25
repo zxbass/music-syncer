@@ -154,11 +154,14 @@ func TestLikedTracksAndArtists(t *testing.T) {
 		case "/v1/me/tracks":
 			writeJSON(w, 200, map[string]any{
 				"total": 1,
-				"items": []any{map[string]any{"track": map[string]any{
-					"id": "t1", "name": "Liked", "duration_ms": 1000,
-					"artists": []any{map[string]any{"name": "Artist"}},
-					"album":   map[string]any{"id": "al", "name": "Album"},
-				}}},
+				"items": []any{map[string]any{
+					"added_at": "2026-11-25T19:05:00Z",
+					"track": map[string]any{
+						"id": "t1", "name": "Liked", "duration_ms": 1000,
+						"artists": []any{map[string]any{"name": "Artist"}},
+						"album":   map[string]any{"id": "al", "name": "Album"},
+					},
+				}},
 			})
 		case "/v1/me/following":
 			after := r.URL.Query().Get("after")
@@ -181,6 +184,9 @@ func TestLikedTracksAndArtists(t *testing.T) {
 	liked, err := provider.LikedTracks(context.Background(), 0)
 	if err != nil || len(liked) != 1 || liked[0].ID != "t1" {
 		t.Fatalf("liked = %+v, err=%v", liked, err)
+	}
+	if liked[0].AddedAt == nil || !liked[0].AddedAt.Equal(time.Date(2026, 11, 25, 19, 5, 0, 0, time.UTC)) {
+		t.Errorf("added_at = %v", liked[0].AddedAt)
 	}
 	artists, err := provider.LikedArtists(context.Background(), 0)
 	if err != nil || len(artists) != 2 {

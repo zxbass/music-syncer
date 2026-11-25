@@ -493,16 +493,35 @@ music-syncer transfer [--from yandex] [--to spotify] [флаги]
 4. **после подтверждения**, что трек реально есть в этом плейлисте, снимает
    лайк в нативных Liked Songs.
 
+Чтобы не удалить лайки, которые были в Spotify до импорта, команда по
+умолчанию требует временное окно. Удаляются только нативные лайки с
+`added_at` внутри окна.
+
 ```bash
-music-syncer migrate-likes --from yandex --to spotify --dry-run
-music-syncer migrate-likes --from yandex --to spotify --yes --search-batch 100
+# Окно из старого report.json (рекомендуется)
+music-syncer migrate-likes --from yandex --to spotify \
+  --import-report old-report.json --dry-run
+
+# Если отчёта нет — задать окно вручную
+music-syncer migrate-likes --from yandex --to spotify \
+  --added-after 2026-11-25T19:00:00Z \
+  --added-before 2026-11-25T19:20:00Z --dry-run
+
+# Применить
+music-syncer migrate-likes --from yandex --to spotify \
+  --import-report old-report.json --yes --search-batch 100
+
+# Явно перенести вообще все совпавшие нативные лайки (старое поведение)
+music-syncer migrate-likes --from yandex --to spotify --all-native --yes
 ```
 
 Важно:
 
-- команда снимает лайки со **всех** найденных исходных лайков, которые сейчас
-  есть в нативных Liked Songs, включая треки, которые были лайкнуты там до
-  импорта;
+- `--import-report` читает `started_at` и `finished_at` из отчёта старого
+  переноса; треки, добавленные импортом, получают `added_at` внутри этого
+  окна, а старые лайки — раньше, поэтому остаются на месте;
+- `--added-after`/`--added-before` задают окно вручную;
+- без окна или `--all-native` команда завершается ошибкой;
 - если добавить трек в favorites не удалось, лайк в нативных любимых
   **не снимается**;
 - без `--dry-run` команда спрашивает подтверждение; `--yes` отключает вопрос;

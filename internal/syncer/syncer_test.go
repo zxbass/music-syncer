@@ -731,8 +731,9 @@ func TestMigrateLikesMovesNativeLikesToFavorites(t *testing.T) {
 	}
 
 	engine, st := newTestEngine(t, src, dst, Options{
-		Categories:   Categories{Likes: true},
-		MigrateLikes: true,
+		Categories:           Categories{Likes: true},
+		MigrateLikes:         true,
+		RemoveAllNativeLikes: true,
 	})
 	report, err := engine.Run(context.Background())
 	if err != nil {
@@ -762,7 +763,7 @@ func TestMigrateLikesMovesNativeLikesToFavorites(t *testing.T) {
 		Matcher: engine.Matcher,
 		Store:   st,
 		Log:     engine.Log,
-		Options: Options{Categories: Categories{Likes: true}, MigrateLikes: true},
+		Options: Options{Categories: Categories{Likes: true}, MigrateLikes: true, RemoveAllNativeLikes: true},
 	}
 	second, err := next.Run(context.Background())
 	if err != nil {
@@ -773,6 +774,62 @@ func TestMigrateLikesMovesNativeLikesToFavorites(t *testing.T) {
 	}
 	if got := len(dst.playlistTracks[favorites]); got != 3 {
 		t.Errorf("second run left %d favorites tracks, want 3", got)
+	}
+}
+
+func TestMigrateLikesKeepsNativeLikesOutsideWindow(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.liked = []domain.Track{
+		track(domain.Yandex, "y1", "Old Like", "Artist", 180000),
+		track(domain.Yandex, "y2", "Imported Like", "Artist", 180000),
+	}
+	dst := newFake(domain.Spotify)
+	old := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	imported := time.Date(2026, 11, 25, 19, 5, 0, 0, time.UTC)
+	s1 := track(domain.Spotify, "s1", "Old Like", "Artist", 180000)
+	s1.AddedAt = &old
+	s2 := track(domain.Spotify, "s2", "Imported Like", "Artist", 180000)
+	s2.AddedAt = &imported
+	dst.liked = []domain.Track{s1, s2}
+	dst.catalog = []domain.Track{s1, s2}
+
+	engine, _ := newTestEngine(t, src, dst, Options{
+		Categories:       Categories{Likes: true},
+		MigrateLikes:     true,
+		NativeLikesSince: &imported,
+		NativeLikesUntil: &imported,
+	})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Likes.Added != 2 {
+		t.Errorf("favorites added = %d, want 2", report.Likes.Added)
+	}
+	if report.NativeLikesRemoved != 1 {
+		t.Errorf("native removed = %d, want 1", report.NativeLikesRemoved)
+	}
+	if len(dst.likedRemove) != 1 || dst.likedRemove[0].ID != "s2" {
+		t.Errorf("unliked = %+v, want only the imported like", dst.likedRemove)
+	}
+	if len(dst.liked) != 1 || dst.liked[0].ID != "s1" {
+		t.Errorf("native liked tracks = %+v, want the old like kept", dst.liked)
+	}
+}
+
+func TestMigrateLikesRequiresWindow(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.liked = []domain.Track{track(domain.Yandex, "y1", "Song", "Artist", 180000)}
+	dst := newFake(domain.Spotify)
+	dst.liked = []domain.Track{track(domain.Spotify, "s1", "Song", "Artist", 180000)}
+	dst.catalog = []domain.Track{track(domain.Spotify, "s1", "Song", "Artist", 180000)}
+	engine, _ := newTestEngine(t, src, dst, Options{
+		Categories:   Categories{Likes: true},
+		MigrateLikes: true,
+	})
+	if _, err := engine.Run(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "time window") {
+		t.Fatalf("err = %v, want a time-window validation error", err)
 	}
 }
 
@@ -790,9 +847,10 @@ func TestMigrateLikesDryRunDoesNotTouchNativeLikes(t *testing.T) {
 	}
 
 	engine, _ := newTestEngine(t, src, dst, Options{
-		Categories:   Categories{Likes: true},
-		MigrateLikes: true,
-		DryRun:       true,
+		Categories:           Categories{Likes: true},
+		MigrateLikes:         true,
+		RemoveAllNativeLikes: true,
+		DryRun:               true,
 	})
 	report, err := engine.Run(context.Background())
 	if err != nil {
@@ -818,8 +876,9 @@ func TestMigrateLikesKeepsNativeLikesWhenFavoritesFail(t *testing.T) {
 	dst.addErr = errors.New("cannot add")
 
 	engine, _ := newTestEngine(t, src, dst, Options{
-		Categories:   Categories{Likes: true},
-		MigrateLikes: true,
+		Categories:           Categories{Likes: true},
+		MigrateLikes:         true,
+		RemoveAllNativeLikes: true,
 	})
 	report, err := engine.Run(context.Background())
 	if err != nil {

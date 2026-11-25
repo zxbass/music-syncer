@@ -85,6 +85,13 @@ type Options struct {
 	// tracks into the favorites playlist. It is only used by the
 	// migrate-likes command.
 	MigrateLikes bool
+	// NativeLikesSince/Until limit which native likes migrate-likes removes.
+	// They are compared with the target's added_at timestamp.
+	NativeLikesSince *time.Time
+	NativeLikesUntil *time.Time
+	// RemoveAllNativeLikes disables the added_at window. It must be set
+	// explicitly for migrate-likes to move every matching native like.
+	RemoveAllNativeLikes bool
 }
 
 // TrackStats summarizes a track collection sync.
@@ -220,6 +227,11 @@ func (e *Engine) Run(ctx context.Context) (*Report, error) {
 	if e.Options.MigrateLikes && !e.Options.Categories.Likes {
 		return nil, errors.New("syncer: migrate likes requires the likes category")
 	}
+	if e.Options.MigrateLikes {
+		if err := e.validateMigrationWindow(); err != nil {
+			return nil, err
+		}
+	}
 	if e.Log == nil {
 		e.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -294,6 +306,40 @@ func (e *Engine) recordError(scope string, err error) {
 	msg := fmt.Sprintf("%s: %v", scope, err)
 	e.report.Errors = append(e.report.Errors, msg)
 	e.Log.Warn("sync error", "scope", scope, "error", err)
+}
+
+func (e *Engine) validateMigrationWindow() error {
+	if e.Options.RemoveAllNativeLikes {
+		if e.Options.NativeLikesSince != nil || e.Options.NativeLikesUntil != nil {
+			return errors.New("syncer: remove-all-native-likes cannot be combined with a native-like time window")
+		}
+		return nil
+	}
+	if e.Options.NativeLikesSince == nil && e.Options.NativeLikesUntil == nil {
+		return errors.New("syncer: migrate likes requires a native-like time window or explicit full removal")
+	}
+	if e.Options.NativeLikesSince != nil && e.Options.NativeLikesUntil != nil &&
+		e.Options.NativeLikesSince.After(*e.Options.NativeLikesUntil) {
+		return errors.New("syncer: native-like window start is after its end")
+	}
+	return nil
+}
+
+// nativeLikeInWindow reports whether a native liked track may be removed.
+func (e *Engine) nativeLikeInWindow(addedAt *time.Time) bool {
+	if e.Options.RemoveAllNativeLikes {
+		return true
+	}
+	if addedAt == nil {
+		return false
+	}
+	if e.Options.NativeLikesSince != nil && addedAt.Before(*e.Options.NativeLikesSince) {
+		return false
+	}
+	if e.Options.NativeLikesUntil != nil && addedAt.After(*e.Options.NativeLikesUntil) {
+		return false
+	}
+	return true
 }
 
 func (e *Engine) noteError(scope string, err error) {
