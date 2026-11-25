@@ -42,7 +42,11 @@ only add API load.
 Playlists are synced additively: existing tracks are kept and only missing
 tracks are added. Use --mirror to remove tracks that are not in the source
 playlist. Mirror removal is skipped automatically when any source track could
-not be matched, or when the source was truncated with --limit.`,
+not be matched, or when the source was truncated with --limit.
+
+Liked tracks are not written to the target's native favorites. They are added
+to a separate "<source service> favorites" playlist (for example,
+"Yandex favorites" when transferring from Yandex Music to Spotify).`,
 		Example: `  music-syncer transfer --from yandex --to spotify --dry-run
   music-syncer transfer --from yandex --to spotify
   music-syncer transfer --from yandex --to spotify --only likes,artists

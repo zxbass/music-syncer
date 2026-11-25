@@ -99,6 +99,15 @@ type ArtistStats struct {
 	Failed    int `json:"failed"`
 }
 
+// LikesPlaylistResult describes the playlist that receives transferred liked
+// tracks. Liked tracks are never written to the target's native favorites.
+type LikesPlaylistResult struct {
+	TargetID    string `json:"target_id,omitempty"`
+	TargetName  string `json:"target_name"`
+	Created     bool   `json:"created,omitempty"`
+	WouldCreate bool   `json:"would_create,omitempty"`
+}
+
 // Unmatched describes a source item that could not be resolved confidently.
 type Unmatched struct {
 	Source domain.Track `json:"source"`
@@ -132,18 +141,19 @@ type PlaylistResult struct {
 
 // Report is a complete synchronization report.
 type Report struct {
-	StartedAt        time.Time         `json:"started_at"`
-	FinishedAt       time.Time         `json:"finished_at"`
-	Source           domain.Name       `json:"source"`
-	Target           domain.Name       `json:"target"`
-	DryRun           bool              `json:"dry_run"`
-	Categories       string            `json:"categories"`
-	Playlists        []PlaylistResult  `json:"playlists,omitempty"`
-	Likes            *TrackStats       `json:"likes,omitempty"`
-	Artists          *ArtistStats      `json:"artists,omitempty"`
-	Errors           []string          `json:"errors,omitempty"`
-	UnmatchedLikes   []Unmatched       `json:"unmatched_likes,omitempty"`
-	UnmatchedArtists []UnmatchedArtist `json:"unmatched_artists,omitempty"`
+	StartedAt        time.Time            `json:"started_at"`
+	FinishedAt       time.Time            `json:"finished_at"`
+	Source           domain.Name          `json:"source"`
+	Target           domain.Name          `json:"target"`
+	DryRun           bool                 `json:"dry_run"`
+	Categories       string               `json:"categories"`
+	Playlists        []PlaylistResult     `json:"playlists,omitempty"`
+	Likes            *TrackStats          `json:"likes,omitempty"`
+	LikesPlaylist    *LikesPlaylistResult `json:"likes_playlist,omitempty"`
+	Artists          *ArtistStats         `json:"artists,omitempty"`
+	Errors           []string             `json:"errors,omitempty"`
+	UnmatchedLikes   []Unmatched          `json:"unmatched_likes,omitempty"`
+	UnmatchedArtists []UnmatchedArtist    `json:"unmatched_artists,omitempty"`
 }
 
 // Engine transfers a library between two providers.
@@ -434,6 +444,20 @@ func targetPlaylistName(prefix, name string) string {
 		value = "Imported playlist"
 	}
 	return truncateText(value, 100)
+}
+
+// favoritesPlaylistName names the playlist that receives liked tracks. The
+// source service is used so the playlist is not confused with the target's
+// native favorites.
+func favoritesPlaylistName(source domain.Name) string {
+	switch source {
+	case domain.Yandex:
+		return "Yandex favorites"
+	case domain.Spotify:
+		return "Spotify favorites"
+	default:
+		return source.DisplayName() + " favorites"
+	}
 }
 
 func truncateText(value string, max int) string {

@@ -441,9 +441,14 @@ func TestLikesAndTransliterationIndex(t *testing.T) {
 		track(domain.Yandex, "y1", "Песня без слов", "Кино", 265000),
 	}
 	dst := newFake(domain.Spotify)
+	// A native Spotify like must not be treated as an existing favorites
+	// playlist entry.
 	dst.liked = []domain.Track{
 		track(domain.Spotify, "s1", "Pesnya bez slov", "Kino", 265000),
 	}
+	dst.addPlaylist("Yandex favorites",
+		track(domain.Spotify, "s1", "Pesnya bez slov", "Kino", 265000),
+	)
 	engine, _ := newTestEngine(t, src, dst, Options{Categories: Categories{Likes: true}})
 	report, err := engine.Run(context.Background())
 	if err != nil {
@@ -452,8 +457,52 @@ func TestLikesAndTransliterationIndex(t *testing.T) {
 	if report.Likes.Existing != 1 || report.Likes.Added != 0 {
 		t.Errorf("likes stats = %+v, want existing 1, added 0", report.Likes)
 	}
+	if report.LikesPlaylist == nil || report.LikesPlaylist.TargetName != "Yandex favorites" {
+		t.Errorf("likes playlist = %+v", report.LikesPlaylist)
+	}
 	if dst.searchCalls != 0 {
 		t.Errorf("search called %d times despite a matching liked track", dst.searchCalls)
+	}
+	if len(dst.likedAdd) != 0 {
+		t.Errorf("native likes were written: %+v", dst.likedAdd)
+	}
+}
+
+func TestLikesCreateFavoritesPlaylist(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.liked = []domain.Track{
+		track(domain.Yandex, "y1", "Song One", "Artist", 180000),
+		track(domain.Yandex, "y2", "Song Two", "Artist", 180000),
+	}
+	dst := newFake(domain.Spotify)
+	// A native Spotify like must not prevent the track from being added to
+	// the imported favorites playlist.
+	dst.liked = []domain.Track{track(domain.Spotify, "s1", "Song One", "Artist", 180000)}
+	dst.catalog = []domain.Track{
+		track(domain.Spotify, "s1", "Song One", "Artist", 180000),
+		track(domain.Spotify, "s2", "Song Two", "Artist", 180000),
+	}
+
+	engine, _ := newTestEngine(t, src, dst, Options{Categories: Categories{Likes: true}})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Likes.Added != 2 || report.Likes.Existing != 0 {
+		t.Errorf("stats = %+v, want added 2, existing 0", report.Likes)
+	}
+	if report.LikesPlaylist == nil || !report.LikesPlaylist.Created ||
+		report.LikesPlaylist.TargetName != "Yandex favorites" {
+		t.Fatalf("likes playlist = %+v", report.LikesPlaylist)
+	}
+	if len(dst.created) != 1 || dst.created[0] != "Yandex favorites" {
+		t.Errorf("created = %v", dst.created)
+	}
+	if len(dst.likedAdd) != 0 {
+		t.Errorf("native likes were written: %+v", dst.likedAdd)
+	}
+	if got := len(dst.playlistTracks[report.LikesPlaylist.TargetID]); got != 2 {
+		t.Errorf("favorites playlist has %d tracks, want 2", got)
 	}
 }
 
@@ -466,6 +515,9 @@ func TestLikesAddAndIdempotency(t *testing.T) {
 	dst := newFake(domain.Spotify)
 	dst.liked = []domain.Track{track(domain.Spotify, "s1", "Song One", "Artist", 180000)}
 	dst.catalog = []domain.Track{track(domain.Spotify, "s2", "Song Two", "Artist", 180000)}
+	favorites := dst.addPlaylist("Yandex favorites",
+		track(domain.Spotify, "s1", "Song One", "Artist", 180000),
+	)
 
 	engine, _ := newTestEngine(t, src, dst, Options{Categories: Categories{Likes: true}})
 	report, err := engine.Run(context.Background())
@@ -475,8 +527,15 @@ func TestLikesAddAndIdempotency(t *testing.T) {
 	if report.Likes.Added != 1 || report.Likes.Existing != 1 {
 		t.Errorf("stats = %+v, want added 1, existing 1", report.Likes)
 	}
-	if len(dst.likedAdd) != 1 || dst.likedAdd[0].ID != "s2" {
-		t.Errorf("likedAdd = %+v", dst.likedAdd)
+	if report.LikesPlaylist == nil || report.LikesPlaylist.Created ||
+		report.LikesPlaylist.TargetID != favorites.ID {
+		t.Errorf("likes playlist = %+v, want the existing favorites playlist", report.LikesPlaylist)
+	}
+	if len(dst.likedAdd) != 0 {
+		t.Errorf("native likes were written: %+v", dst.likedAdd)
+	}
+	if got := len(dst.playlistTracks[favorites.ID]); got != 2 {
+		t.Errorf("favorites playlist has %d tracks, want 2", got)
 	}
 
 	engine2, _ := newTestEngine(t, src, dst, Options{Categories: Categories{Likes: true}})
@@ -487,8 +546,76 @@ func TestLikesAddAndIdempotency(t *testing.T) {
 	if report2.Likes.Added != 0 || report2.Likes.Existing != 2 {
 		t.Errorf("second run stats = %+v, want added 0, existing 2", report2.Likes)
 	}
-	if len(dst.likedAdd) != 1 {
-		t.Errorf("second run added %d tracks", len(dst.likedAdd))
+	if len(dst.created) != 0 {
+		t.Errorf("second run created %d playlists", len(dst.created))
+	}
+	if got := len(dst.playlistTracks[favorites.ID]); got != 2 {
+		t.Errorf("second run left %d tracks in favorites playlist, want 2", got)
+	}
+}
+
+func TestLikesPlaylistUsesSourceServiceName(t *testing.T) {
+	src := newFake(domain.Spotify)
+	src.liked = []domain.Track{track(domain.Spotify, "s1", "Song", "Artist", 180000)}
+	dst := newFake(domain.Yandex)
+	dst.catalog = []domain.Track{track(domain.Yandex, "y1", "Song", "Artist", 180000)}
+
+	engine, _ := newTestEngine(t, src, dst, Options{Categories: Categories{Likes: true}})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.LikesPlaylist == nil || report.LikesPlaylist.TargetName != "Spotify favorites" {
+		t.Errorf("likes playlist = %+v, want %q", report.LikesPlaylist, "Spotify favorites")
+	}
+	if len(dst.created) != 1 || dst.created[0] != "Spotify favorites" {
+		t.Errorf("created = %v", dst.created)
+	}
+}
+
+func TestLikesPlaylistDryRun(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.liked = []domain.Track{track(domain.Yandex, "y1", "Song", "Artist", 180000)}
+	dst := newFake(domain.Spotify)
+	dst.catalog = []domain.Track{track(domain.Spotify, "s1", "Song", "Artist", 180000)}
+
+	engine, st := newTestEngine(t, src, dst, Options{
+		Categories: Categories{Likes: true},
+		DryRun:     true,
+	})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Likes.Added != 1 {
+		t.Errorf("stats = %+v, want one planned add", report.Likes)
+	}
+	if report.LikesPlaylist == nil || !report.LikesPlaylist.WouldCreate {
+		t.Errorf("likes playlist = %+v, want would-create", report.LikesPlaylist)
+	}
+	if len(dst.playlists) != 0 || len(dst.added) != 0 || len(dst.likedAdd) != 0 {
+		t.Errorf("dry run wrote to target: playlists=%d added=%d liked=%d",
+			len(dst.playlists), len(dst.added), len(dst.likedAdd))
+	}
+	if _, ok := st.LookupPlaylist(src.Name(), dst.Name(), likesPlaylistSourceID); ok {
+		t.Error("dry run stored a favorites playlist link")
+	}
+}
+
+func TestEmptyLikesDoNotCreatePlaylist(t *testing.T) {
+	src := newFake(domain.Yandex)
+	dst := newFake(domain.Spotify)
+
+	engine, _ := newTestEngine(t, src, dst, Options{Categories: Categories{Likes: true}})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Likes == nil || report.Likes.Source != 0 {
+		t.Errorf("likes stats = %+v", report.Likes)
+	}
+	if len(dst.created) != 0 {
+		t.Errorf("created %v for an empty likes library", dst.created)
 	}
 }
 

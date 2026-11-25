@@ -70,8 +70,18 @@ func printTransferReport(w io.Writer, report *syncer.Report) {
 	}
 
 	if report.Likes != nil {
-		fmt.Fprintf(w, "\nLiked tracks: %d source, %d added, %d already liked, %d unmatched, %d failed\n",
-			report.Likes.Source, report.Likes.Added, report.Likes.Existing, report.Likes.Unmatched, report.Likes.Failed)
+		playlist := ""
+		if report.LikesPlaylist != nil {
+			playlist = fmt.Sprintf(" → %q", report.LikesPlaylist.TargetName)
+			switch {
+			case report.LikesPlaylist.Created:
+				playlist += " (created)"
+			case report.LikesPlaylist.WouldCreate:
+				playlist += " (would create)"
+			}
+		}
+		fmt.Fprintf(w, "\nLiked tracks%s: %d source, %d added, %d already present, %d unmatched, %d failed\n",
+			playlist, report.Likes.Source, report.Likes.Added, report.Likes.Existing, report.Likes.Unmatched, report.Likes.Failed)
 	}
 	if report.Artists != nil {
 		fmt.Fprintf(w, "Artists: %d source, %d followed, %d already followed, %d unmatched, %d failed\n",

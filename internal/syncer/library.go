@@ -7,8 +7,10 @@ import (
 	"github.com/zxbass/music-syncer/internal/domain"
 )
 
+const likesPlaylistSourceID = "__liked_tracks__"
+
 func (e *Engine) syncLikes(ctx context.Context) error {
-	if !e.Source.Capabilities().LikedTracks || !e.Target.Capabilities().LikedTracks {
+	if !e.Source.Capabilities().LikedTracks || !e.Target.Capabilities().Playlists {
 		return fmt.Errorf("%w: liked tracks", domain.ErrNotSupported)
 	}
 	src, err := e.Source.LikedTracks(ctx, e.Options.Limit)
@@ -18,69 +20,122 @@ func (e *Engine) syncLikes(ctx context.Context) error {
 	if e.Options.Limit > 0 && len(src) > e.Options.Limit {
 		src = src[:e.Options.Limit]
 	}
-	target, err := e.Target.LikedTracks(ctx, 0)
-	if err != nil {
-		return fmt.Errorf("load target liked tracks: %w", err)
-	}
 
 	stats := &TrackStats{Source: len(src)}
 	e.report.Likes = stats
-
-	knownIDs := make(map[string]bool, len(target))
-	for _, t := range target {
-		if t.ID != "" {
-			knownIDs[t.ID] = true
-		}
-	}
-	index := newTrackIndex(target)
-	seen := map[string]bool{}
-	var add []domain.Track
-
-	for _, srcTrack := range src {
-		res, err := e.resolve(ctx, srcTrack, index, knownIDs)
-		if err != nil {
-			if isFatal(err) {
-				return err
-			}
-			stats.Failed++
-			e.noteError("match liked track "+srcTrack.String(), err)
-			continue
-		}
-		if res.Unmatched != nil {
-			stats.Unmatched++
-			e.report.UnmatchedLikes = append(e.report.UnmatchedLikes, *res.Unmatched)
-			e.Log.Info("unmatched liked track", "track", srcTrack.String(), "reason", res.Unmatched.Reason)
-			continue
-		}
-		if res.Track.ID == "" {
-			stats.Failed++
-			continue
-		}
-		if res.Existing || seen[res.Track.ID] {
-			stats.Existing++
-			continue
-		}
-		seen[res.Track.ID] = true
-		add = append(add, res.Track)
+	if len(src) == 0 {
+		e.Log.Info("synced liked tracks", "source_tracks", 0)
+		return nil
 	}
 
-	if len(add) > 0 {
+	target, playlist, err := e.ensureLikesPlaylist(ctx)
+	if err != nil {
+		return err
+	}
+	e.report.LikesPlaylist = playlist
+
+	existing, err := e.loadTargetTracks(ctx, target)
+	if err != nil {
+		return fmt.Errorf("load favorites playlist: %w", err)
+	}
+
+	result := &PlaylistResult{
+		TargetID:   target.ID,
+		TargetName: playlist.TargetName,
+	}
+	newTracks, _, err := e.matchPlaylistTracks(ctx, src, existing, result)
+	if err != nil {
+		return err
+	}
+	stats.Existing = result.Stats.Existing
+	stats.Unmatched = result.Stats.Unmatched
+	stats.Failed = result.Stats.Failed
+	if len(result.Unmatched) > 0 {
+		e.report.UnmatchedLikes = append(e.report.UnmatchedLikes, result.Unmatched...)
+		for _, m := range result.Unmatched {
+			e.Log.Info("unmatched liked track", "track", m.Source.String(), "reason", m.Reason)
+		}
+	}
+
+	if len(newTracks) > 0 {
 		if e.Options.DryRun {
-			stats.Added = len(add)
-		} else if err := e.Target.LikeTracks(ctx, add); err != nil {
-			stats.Failed += len(add)
+			stats.Added = len(newTracks)
+		} else if err := e.Target.AddTracks(ctx, target, newTracks); err != nil {
+			stats.Failed += len(newTracks)
 			if isFatal(err) {
 				return err
 			}
-			e.recordError("add liked tracks", err)
+			e.recordError("add liked tracks to "+playlist.TargetName, err)
 		} else {
-			stats.Added = len(add)
+			stats.Added = len(newTracks)
 		}
 	}
 
 	e.Log.Info("synced liked tracks", "source_tracks", stats.Source, "added", stats.Added,
-		"existing", stats.Existing, "unmatched", stats.Unmatched, "failed", stats.Failed)
+		"existing", stats.Existing, "unmatched", stats.Unmatched, "failed", stats.Failed,
+		"playlist", playlist.TargetName)
 	return nil
+}
+
+// ensureLikesPlaylist finds or creates the playlist that receives liked
+// tracks. The target's native favorites are intentionally not touched.
+func (e *Engine) ensureLikesPlaylist(ctx context.Context) (domain.Playlist, *LikesPlaylistResult, error) {
+	name := targetPlaylistName(e.Options.Prefix, favoritesPlaylistName(e.Source.Name()))
+	playlists, err := e.Target.Playlists(ctx)
+	if err != nil {
+		return domain.Playlist{}, nil, fmt.Errorf("load target playlists: %w", err)
+	}
+
+	byID := make(map[string]domain.Playlist, len(playlists))
+	for _, pl := range playlists {
+		if pl.ID != "" {
+			byID[pl.ID] = pl
+		}
+	}
+	if link, ok := e.Store.LookupPlaylist(e.Source.Name(), e.Target.Name(), likesPlaylistSourceID); ok && link.TargetID != "" {
+		if pl, found := byID[link.TargetID]; found && !pl.ReadOnly {
+			return pl, &LikesPlaylistResult{TargetID: pl.ID, TargetName: pl.Name}, nil
+		}
+	}
+
+	var existing *domain.Playlist
+	for _, pl := range playlists {
+		if pl.ID == "" || pl.ReadOnly || playlistNameKey(pl.Name) != playlistNameKey(name) {
+			continue
+		}
+		if e.Store.TargetPlaylistInUse(e.Target.Name(), pl.ID) {
+			continue
+		}
+		pl := pl
+		existing = &pl
+		break
+	}
+	if existing != nil {
+		if !e.Options.DryRun {
+			e.Store.PutPlaylist(e.Source.Name(), e.Target.Name(), likesPlaylistSourceID, existing.ID, existing.Name)
+		}
+		return *existing, &LikesPlaylistResult{TargetID: existing.ID, TargetName: existing.Name}, nil
+	}
+
+	if e.Options.DryRun {
+		return domain.Playlist{Provider: e.Target.Name(), Name: name},
+			&LikesPlaylistResult{TargetName: name, WouldCreate: true}, nil
+	}
+
+	description := fmt.Sprintf("Liked tracks imported from %s with music-syncer", e.Source.Name().DisplayName())
+	created, err := e.Target.CreatePlaylist(ctx, name, truncateText(description, 300))
+	if err != nil {
+		return domain.Playlist{}, nil, fmt.Errorf("create favorites playlist %q: %w", name, err)
+	}
+	if created.Name == "" {
+		created.Name = name
+	}
+	e.Store.PutPlaylist(e.Source.Name(), e.Target.Name(), likesPlaylistSourceID, created.ID, created.Name)
+	return created, &LikesPlaylistResult{
+		TargetID:   created.ID,
+		TargetName: created.Name,
+		Created:    true,
+	}, nil
 }
 
 func (e *Engine) syncArtists(ctx context.Context) error {
