@@ -290,12 +290,15 @@ func TestCreatePlaylistAndAddRemove(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	})
-	pl, err := provider.CreatePlaylist(context.Background(), "Imported", "desc")
+	pl, err := provider.CreatePlaylist(context.Background(), "Imported", "desc\nwith\r\nlines")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if pl.ID != "new" || createBody["public"] != false {
 		t.Errorf("playlist = %+v, body = %+v", pl, createBody)
+	}
+	if got := createBody["description"]; got != "desc with lines" {
+		t.Errorf("description = %q, want newlines collapsed", got)
 	}
 	err = provider.AddTracks(context.Background(), pl, []domain.Track{{ID: "t1"}, {ID: "t2"}})
 	if err != nil {

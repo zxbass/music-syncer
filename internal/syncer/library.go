@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/zxbass/music-syncer/internal/domain"
@@ -44,11 +45,9 @@ func (e *Engine) syncLikes(ctx context.Context) error {
 		TargetName: playlist.TargetName,
 	}
 	newTracks, _, err := e.matchPlaylistTracks(ctx, src, existing, result)
-	if err != nil {
-		return err
-	}
 	stats.Existing = result.Stats.Existing
 	stats.Unmatched = result.Stats.Unmatched
+	stats.Deferred = result.Stats.Deferred
 	stats.Failed = result.Stats.Failed
 	if len(result.Unmatched) > 0 {
 		e.report.UnmatchedLikes = append(e.report.UnmatchedLikes, result.Unmatched...)
@@ -56,24 +55,20 @@ func (e *Engine) syncLikes(ctx context.Context) error {
 			e.Log.Info("unmatched liked track", "track", m.Source.String(), "reason", m.Reason)
 		}
 	}
+	if err != nil {
+		return err
+	}
 
-	if len(newTracks) > 0 {
-		if e.Options.DryRun {
-			stats.Added = len(newTracks)
-		} else if err := e.Target.AddTracks(ctx, target, newTracks); err != nil {
-			stats.Failed += len(newTracks)
-			if isFatal(err) {
-				return err
-			}
-			e.recordError("add liked tracks to "+playlist.TargetName, err)
-		} else {
-			stats.Added = len(newTracks)
+	if err := e.addTracks(ctx, target, newTracks, stats); err != nil {
+		if isFatal(err) {
+			return err
 		}
+		e.recordError("add liked tracks to "+playlist.TargetName, err)
 	}
 
 	e.Log.Info("synced liked tracks", "source_tracks", stats.Source, "added", stats.Added,
-		"existing", stats.Existing, "unmatched", stats.Unmatched, "failed", stats.Failed,
-		"playlist", playlist.TargetName)
+		"existing", stats.Existing, "unmatched", stats.Unmatched, "deferred", stats.Deferred,
+		"failed", stats.Failed, "playlist", playlist.TargetName)
 	return nil
 }
 
@@ -111,9 +106,7 @@ func (e *Engine) ensureLikesPlaylist(ctx context.Context) (domain.Playlist, *Lik
 		break
 	}
 	if existing != nil {
-		if !e.Options.DryRun {
-			e.Store.PutPlaylist(e.Source.Name(), e.Target.Name(), likesPlaylistSourceID, existing.ID, existing.Name)
-		}
+		e.linkPlaylist(likesPlaylistSourceID, *existing)
 		return *existing, &LikesPlaylistResult{TargetID: existing.ID, TargetName: existing.Name}, nil
 	}
 
@@ -130,7 +123,7 @@ func (e *Engine) ensureLikesPlaylist(ctx context.Context) (domain.Playlist, *Lik
 	if created.Name == "" {
 		created.Name = name
 	}
-	e.Store.PutPlaylist(e.Source.Name(), e.Target.Name(), likesPlaylistSourceID, created.ID, created.Name)
+	e.linkPlaylist(likesPlaylistSourceID, created)
 	return created, &LikesPlaylistResult{
 		TargetID:   created.ID,
 		TargetName: created.Name,
@@ -168,8 +161,12 @@ func (e *Engine) syncArtists(ctx context.Context) error {
 	var add []domain.Artist
 	var unmatched []UnmatchedArtist
 
-	for _, srcArtist := range src {
+	for i, srcArtist := range src {
 		artist, existing, miss, err := e.resolveArtist(ctx, srcArtist, index, knownIDs)
+		if errors.Is(err, errSearchBatch) {
+			stats.Deferred += len(src) - i
+			break
+		}
 		if err != nil {
 			if isFatal(err) {
 				return err
@@ -213,6 +210,7 @@ func (e *Engine) syncArtists(ctx context.Context) error {
 		}
 	}
 	e.Log.Info("synced artists", "source_artists", stats.Source, "added", stats.Added,
-		"existing", stats.Existing, "unmatched", stats.Unmatched, "failed", stats.Failed)
+		"existing", stats.Existing, "unmatched", stats.Unmatched, "deferred", stats.Deferred,
+		"failed", stats.Failed)
 	return nil
 }

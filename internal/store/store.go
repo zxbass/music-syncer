@@ -22,6 +22,7 @@ const Version = 1
 type Data struct {
 	Version   int                     `json:"version"`
 	Matches   map[string]Match        `json:"matches,omitempty"`
+	Misses    map[string]Miss         `json:"misses,omitempty"`
 	Playlists map[string]PlaylistLink `json:"playlists,omitempty"`
 	Artists   map[string]ArtistLink   `json:"artists,omitempty"`
 }
@@ -35,6 +36,13 @@ type Match struct {
 	DurationMS    int       `json:"duration_ms,omitempty"`
 	Confidence    float64   `json:"confidence,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// Miss is a cached decision that a source track has no confident target
+// match. Misses expire in the engine so the catalog is re-checked eventually.
+type Miss struct {
+	Reason    string    `json:"reason"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // PlaylistLink maps a source playlist to a target playlist.
@@ -90,6 +98,7 @@ func newData() Data {
 	return Data{
 		Version:   Version,
 		Matches:   map[string]Match{},
+		Misses:    map[string]Miss{},
 		Playlists: map[string]PlaylistLink{},
 		Artists:   map[string]ArtistLink{},
 	}
@@ -98,6 +107,9 @@ func newData() Data {
 func normalize(data *Data) {
 	if data.Matches == nil {
 		data.Matches = map[string]Match{}
+	}
+	if data.Misses == nil {
+		data.Misses = map[string]Miss{}
 	}
 	if data.Playlists == nil {
 		data.Playlists = map[string]PlaylistLink{}
@@ -173,7 +185,8 @@ func (s *Store) LookupMatch(src, dst domain.Name, srcID string) (Match, bool) {
 func (s *Store) PutMatch(src, dst domain.Name, srcID string, track domain.Track, confidence float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data.Matches[MatchKey(src, dst, srcID)] = Match{
+	key := MatchKey(src, dst, srcID)
+	s.data.Matches[key] = Match{
 		TargetID:      track.ID,
 		TargetAlbumID: track.AlbumID,
 		Title:         track.Title,
@@ -181,6 +194,26 @@ func (s *Store) PutMatch(src, dst domain.Name, srcID string, track domain.Track,
 		DurationMS:    track.DurationMS,
 		Confidence:    confidence,
 		UpdatedAt:     time.Now().UTC(),
+	}
+	delete(s.data.Misses, key)
+	s.dirty = true
+}
+
+// LookupMiss returns a cached unmatched decision.
+func (s *Store) LookupMiss(src, dst domain.Name, srcID string) (Miss, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	miss, ok := s.data.Misses[MatchKey(src, dst, srcID)]
+	return miss, ok
+}
+
+// PutMiss stores an unmatched decision.
+func (s *Store) PutMiss(src, dst domain.Name, srcID, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.Misses[MatchKey(src, dst, srcID)] = Miss{
+		Reason:    reason,
+		UpdatedAt: time.Now().UTC(),
 	}
 	s.dirty = true
 }
@@ -241,9 +274,30 @@ func (s *Store) LookupArtist(src, dst domain.Name, srcID string) (ArtistLink, bo
 func (s *Store) PutArtist(src, dst domain.Name, srcID, targetID, name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data.Artists[ArtistKey(src, dst, srcID)] = ArtistLink{
+	key := ArtistKey(src, dst, srcID)
+	s.data.Artists[key] = ArtistLink{
 		TargetID:  targetID,
 		Name:      name,
+		UpdatedAt: time.Now().UTC(),
+	}
+	delete(s.data.Misses, key)
+	s.dirty = true
+}
+
+// LookupArtistMiss returns a cached unmatched artist decision.
+func (s *Store) LookupArtistMiss(src, dst domain.Name, srcID string) (Miss, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	miss, ok := s.data.Misses[ArtistKey(src, dst, srcID)]
+	return miss, ok
+}
+
+// PutArtistMiss stores an unmatched artist decision.
+func (s *Store) PutArtistMiss(src, dst domain.Name, srcID, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.Misses[ArtistKey(src, dst, srcID)] = Miss{
+		Reason:    reason,
 		UpdatedAt: time.Now().UTC(),
 	}
 	s.dirty = true
@@ -252,6 +306,7 @@ func (s *Store) PutArtist(src, dst domain.Name, srcID, targetID, name string) {
 // Stats describes the number of cached entries.
 type Stats struct {
 	Matches   int `json:"matches"`
+	Misses    int `json:"misses"`
 	Playlists int `json:"playlists"`
 	Artists   int `json:"artists"`
 }
@@ -262,6 +317,7 @@ func (s *Store) Stats() Stats {
 	defer s.mu.Unlock()
 	return Stats{
 		Matches:   len(s.data.Matches),
+		Misses:    len(s.data.Misses),
 		Playlists: len(s.data.Playlists),
 		Artists:   len(s.data.Artists),
 	}

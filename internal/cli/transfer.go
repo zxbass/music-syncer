@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/zxbass/music-syncer/internal/httpx"
 	"github.com/zxbass/music-syncer/internal/syncer"
 )
 
@@ -23,6 +24,7 @@ func (a *App) transferCmd() *cobra.Command {
 		mirror       bool
 		dryRun       bool
 		limit        int
+		searchBatch  int
 		reportPath   string
 		threshold    float64
 	)
@@ -46,10 +48,19 @@ not be matched, or when the source was truncated with --limit.
 
 Liked tracks are not written to the target's native favorites. They are added
 to a separate "<source service> favorites" playlist (for example,
-"Yandex favorites" when transferring from Yandex Music to Spotify).`,
+"Yandex favorites" when transferring from Yandex Music to Spotify).
+
+If the provider rate limit or development quota is reached, the command stops
+and saves its progress. Run the same command again later to continue without
+duplicating tracks that were already imported.
+
+Use --search-batch N to spend at most N new catalog lookups in one run. Cached
+matches do not count, so each rerun continues with the next portion of the
+library instead of exhausting the provider quota in one go.`,
 		Example: `  music-syncer transfer --from yandex --to spotify --dry-run
   music-syncer transfer --from yandex --to spotify
   music-syncer transfer --from yandex --to spotify --only likes,artists
+  music-syncer transfer --from yandex --to spotify --search-batch 100
   music-syncer transfer --from spotify --to yandex --playlist "Road trip"
   music-syncer transfer --from yandex --to spotify --mirror --report report.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -59,6 +70,9 @@ to a separate "<source service> favorites" playlist (for example,
 			}
 			if limit < 0 {
 				return errors.New("--limit cannot be negative")
+			}
+			if searchBatch < 0 {
+				return errors.New("--search-batch cannot be negative")
 			}
 			if threshold < 0 || threshold > 1 {
 				return errors.New("--threshold must be between 0 and 1")
@@ -91,6 +105,9 @@ to a separate "<source service> favorites" playlist (for example,
 			if mirror {
 				fmt.Fprintln(a.out, "Mirror: enabled for playlists (skipped on unmatched tracks or --limit truncation)")
 			}
+			if searchBatch > 0 {
+				fmt.Fprintf(a.out, "Search batch: %d new catalog lookups per run\n", searchBatch)
+			}
 			if len(playlists) > 0 {
 				fmt.Fprintf(a.out, "Playlist filters: %s\n", strings.Join(playlists, ", "))
 			}
@@ -110,6 +127,7 @@ to a separate "<source service> favorites" playlist (for example,
 					Mirror:       mirror,
 					DryRun:       dryRun,
 					Limit:        limit,
+					SearchBatch:  searchBatch,
 				},
 			}
 			if threshold > 0 {
@@ -129,6 +147,14 @@ to a separate "<source service> favorites" playlist (for example,
 				fmt.Fprintf(a.out, "\nReport written to %s\n", reportPath)
 			}
 			if runErr != nil {
+				switch {
+				case errors.Is(runErr, httpx.ErrQuotaExceeded):
+					return fmt.Errorf("%w\nProvider quota is exhausted. Progress is saved in %s; rerun the same command after the quota resets to continue without duplicates.",
+						runErr, a.statePath())
+				case errors.Is(runErr, httpx.ErrRateLimited):
+					return fmt.Errorf("%w\nProvider rate limit reached. Progress is saved in %s; rerun the same command later to continue without duplicates.",
+						runErr, a.statePath())
+				}
 				return runErr
 			}
 			if report != nil && len(report.Errors) > 0 {
@@ -148,6 +174,7 @@ to a separate "<source service> favorites" playlist (for example,
 	cmd.Flags().BoolVar(&mirror, "mirror", false, "remove target playlist tracks that are missing from the source")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the plan without changing anything")
 	cmd.Flags().IntVar(&limit, "limit", 0, "limit source tracks per collection (0 = no limit)")
+	cmd.Flags().IntVar(&searchBatch, "search-batch", 0, "stop after N new catalog searches per run (0 = unlimited); rerun to continue")
 	cmd.Flags().StringVar(&reportPath, "report", "", "write a JSON report to this path")
 	cmd.Flags().Float64Var(&threshold, "threshold", 0, "override the match threshold (0.0-1.0)")
 	return cmd

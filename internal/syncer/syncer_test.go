@@ -2,14 +2,17 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zxbass/music-syncer/internal/domain"
+	"github.com/zxbass/music-syncer/internal/httpx"
 	"github.com/zxbass/music-syncer/internal/matcher"
 	"github.com/zxbass/music-syncer/internal/store"
 )
@@ -22,10 +25,12 @@ type fakeProvider struct {
 	liked          []domain.Track
 	artists        []domain.Artist
 
-	catalog       []domain.Track
-	artistCatalog []domain.Artist
-	searchErr     error
-	searchCalls   int
+	catalog           []domain.Track
+	artistCatalog     []domain.Artist
+	searchErr         error
+	searchCalls       int
+	artistSearchCalls int
+	addErr            error
 
 	created   []string
 	added     []domain.Track
@@ -88,6 +93,7 @@ func (f *fakeProvider) SearchTracks(context.Context, domain.Track, int) ([]domai
 }
 
 func (f *fakeProvider) SearchArtists(context.Context, domain.Artist, int) ([]domain.Artist, error) {
+	f.artistSearchCalls++
 	if f.searchErr != nil {
 		return nil, f.searchErr
 	}
@@ -104,6 +110,9 @@ func (f *fakeProvider) CreatePlaylist(_ context.Context, name, _ string) (domain
 }
 
 func (f *fakeProvider) AddTracks(_ context.Context, pl domain.Playlist, tracks []domain.Track) error {
+	if f.addErr != nil {
+		return f.addErr
+	}
 	f.added = append(f.added, tracks...)
 	f.playlistTracks[pl.ID] = append(f.playlistTracks[pl.ID], tracks...)
 	for i := range f.playlists {
@@ -266,6 +275,50 @@ func TestPlaylistDryRun(t *testing.T) {
 	}
 }
 
+func TestPlaylistLinkIsSavedBeforeAddFailure(t *testing.T) {
+	src := newFake(domain.Yandex)
+	pl := src.addPlaylist("Road Trip", track(domain.Yandex, "y1", "Song", "Artist", 180000))
+	dst := newFake(domain.Spotify)
+	dst.catalog = []domain.Track{track(domain.Spotify, "s1", "Song", "Artist", 180000)}
+	dst.addErr = context.Canceled
+
+	engine, st := newTestEngine(t, src, dst, Options{Categories: Categories{Playlists: true}})
+	_, err := engine.Run(context.Background())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	link, ok := st.LookupPlaylist(src.Name(), dst.Name(), pl.ID)
+	if !ok || link.TargetID == "" {
+		t.Fatalf("playlist link was not saved before adding tracks: %+v", link)
+	}
+	if len(dst.playlists) != 1 {
+		t.Errorf("target has %d playlists, want exactly one", len(dst.playlists))
+	}
+}
+
+func TestResolvedMatchesAreCheckpointed(t *testing.T) {
+	src := newFake(domain.Yandex)
+	dst := newFake(domain.Spotify)
+	dst.catalog = []domain.Track{track(domain.Spotify, "s1", "Song", "Artist", 180000)}
+	engine, st := newTestEngine(t, src, dst, Options{})
+	engine.report = &Report{}
+
+	for i := 0; i < stateCheckpointEvery+5; i++ {
+		srcTrack := track(domain.Yandex, fmt.Sprintf("y%d", i), "Song", "Artist", 180000)
+		if _, err := engine.resolve(context.Background(), srcTrack, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reopened, err := store.Open(st.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.Stats().Matches; got != stateCheckpointEvery {
+		t.Errorf("persisted matches = %d, want %d after a checkpoint", got, stateCheckpointEvery)
+	}
+}
+
 func TestLinkedTargetIsNotReusedByAnotherSourcePlaylist(t *testing.T) {
 	src := newFake(domain.Yandex)
 	src.addPlaylist("Shared name", track(domain.Yandex, "y1", "Song One", "Artist", 180000))
@@ -302,6 +355,36 @@ func TestLinkedTargetIsNotReusedByAnotherSourcePlaylist(t *testing.T) {
 	}
 	if got := len(dst.playlistTracks[first.TargetID]); got != 1 {
 		t.Errorf("new target has %d tracks, want 1", got)
+	}
+}
+
+func TestDuplicateTargetNamesLinkedBySourceURL(t *testing.T) {
+	src := newFake(domain.Yandex)
+	pl := src.addPlaylist("Data Types", track(domain.Yandex, "y1", "Song", "Artist", 180000))
+	pl.URL = "https://music.yandex.ru/users/1/playlists/1020"
+	src.playlists[0] = pl
+
+	dst := newFake(domain.Spotify)
+	dst.catalog = []domain.Track{track(domain.Spotify, "s1", "Song", "Artist", 180000)}
+	dst.addPlaylist("Data Types")
+	expected := dst.addPlaylist("Data Types")
+	escapedURL := strings.ReplaceAll(pl.URL, "/", "&#x2F;")
+	dst.playlists[1].Description = "Imported from Yandex Music with music-syncer; Source: " + escapedURL
+
+	engine, _ := newTestEngine(t, src, dst, Options{Categories: Categories{Playlists: true}})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := report.Playlists[0]
+	if res.TargetID != expected.ID {
+		t.Errorf("target = %q, want the playlist with the source URL (%q)", res.TargetID, expected.ID)
+	}
+	if res.Created || len(dst.created) != 0 {
+		t.Errorf("created %v, want reuse of the existing playlist", dst.created)
+	}
+	if got := len(dst.playlistTracks[expected.ID]); got != 1 {
+		t.Errorf("linked target has %d tracks, want 1", got)
 	}
 }
 
@@ -406,6 +489,39 @@ func TestPlaylistMirrorSkippedOnUnmatched(t *testing.T) {
 	}
 	if !foundNote {
 		t.Errorf("missing mirror-skipped note: %v", res.Notes)
+	}
+}
+
+func TestPlaylistMirrorSkippedOnDeferredTracks(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.addPlaylist("Road Trip",
+		track(domain.Yandex, "y1", "Song One", "Artist", 180000),
+		track(domain.Yandex, "y2", "Song Two", "Artist", 180000),
+	)
+	dst := newFake(domain.Spotify)
+	dst.catalog = []domain.Track{track(domain.Spotify, "s1", "Song One", "Artist", 180000)}
+	existing := dst.addPlaylist("Road Trip",
+		track(domain.Spotify, "extra", "Extra Song", "Artist", 180000),
+	)
+
+	engine, _ := newTestEngine(t, src, dst, Options{
+		Categories:  Categories{Playlists: true},
+		Mirror:      true,
+		SearchBatch: 1,
+	})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := report.Playlists[0]
+	if res.Stats.Deferred == 0 {
+		t.Fatal("expected deferred source tracks")
+	}
+	if res.Removed != 0 {
+		t.Errorf("removed = %d, want 0 while source tracks are deferred", res.Removed)
+	}
+	if got := len(dst.playlistTracks[existing.ID]); got != 2 {
+		t.Errorf("target playlist has %d tracks, want the extra track to be kept", got)
 	}
 }
 
@@ -602,6 +718,166 @@ func TestLikesPlaylistDryRun(t *testing.T) {
 	}
 }
 
+func TestSearchBatchStopsAndResumes(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.liked = []domain.Track{
+		track(domain.Yandex, "y1", "Song One", "Artist", 180000),
+		track(domain.Yandex, "y2", "Song Two", "Artist", 180000),
+		track(domain.Yandex, "y3", "Song Three", "Artist", 180000),
+	}
+	dst := newFake(domain.Spotify)
+	dst.catalog = []domain.Track{
+		track(domain.Spotify, "s1", "Song One", "Artist", 180000),
+		track(domain.Spotify, "s2", "Song Two", "Artist", 180000),
+		track(domain.Spotify, "s3", "Song Three", "Artist", 180000),
+	}
+
+	engine, st := newTestEngine(t, src, dst, Options{
+		Categories:  Categories{Likes: true},
+		SearchBatch: 1,
+	})
+	report, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.BatchLimitReached {
+		t.Error("expected the batch limit to be reported")
+	}
+	if report.Likes.Added != 1 || report.Likes.Deferred != 2 {
+		t.Errorf("first run stats = %+v, want added 1, deferred 2", report.Likes)
+	}
+	if dst.searchCalls != 1 {
+		t.Errorf("search calls = %d, want 1", dst.searchCalls)
+	}
+
+	run := func() *Report {
+		next := &Engine{
+			Source:  src,
+			Target:  dst,
+			Matcher: engine.Matcher,
+			Store:   st,
+			Log:     engine.Log,
+			Options: Options{Categories: Categories{Likes: true}, SearchBatch: 1},
+		}
+		r, err := next.Run(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	second := run()
+	if second.Likes.Added != 1 || second.Likes.Existing != 1 || second.Likes.Deferred != 1 {
+		t.Errorf("second run stats = %+v, want added 1, existing 1, deferred 1", second.Likes)
+	}
+	if !second.BatchLimitReached {
+		t.Error("second run should also stop at the batch limit")
+	}
+
+	third := run()
+	if third.Likes.Added != 1 || third.Likes.Existing != 2 || third.Likes.Deferred != 0 {
+		t.Errorf("third run stats = %+v, want added 1, existing 2, deferred 0", third.Likes)
+	}
+	if third.BatchLimitReached {
+		t.Error("third run should have finished the collection")
+	}
+	if got := len(dst.playlistTracks[third.LikesPlaylist.TargetID]); got != 3 {
+		t.Errorf("favorites playlist has %d tracks, want 3", got)
+	}
+}
+
+func TestSearchBatchMakesProgressPastUnmatchedTracks(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.liked = []domain.Track{
+		track(domain.Yandex, "y1", "Unknown One", "Nobody", 1000),
+		track(domain.Yandex, "y2", "Unknown Two", "Nobody", 1000),
+	}
+	dst := newFake(domain.Spotify)
+
+	engine, st := newTestEngine(t, src, dst, Options{
+		Categories:  Categories{Likes: true},
+		SearchBatch: 1,
+	})
+	first, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Likes.Unmatched != 1 || first.Likes.Deferred != 1 {
+		t.Errorf("first run stats = %+v, want unmatched 1, deferred 1", first.Likes)
+	}
+	if dst.searchCalls != 1 {
+		t.Errorf("search calls after first run = %d, want 1", dst.searchCalls)
+	}
+
+	next := &Engine{
+		Source:  src,
+		Target:  dst,
+		Matcher: engine.Matcher,
+		Store:   st,
+		Log:     engine.Log,
+		Options: Options{Categories: Categories{Likes: true}, SearchBatch: 1},
+	}
+	second, err := next.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Likes.Unmatched != 2 || second.Likes.Deferred != 0 {
+		t.Errorf("second run stats = %+v, want unmatched 2, deferred 0", second.Likes)
+	}
+	if second.BatchLimitReached {
+		t.Error("second run should have finished the collection")
+	}
+	if dst.searchCalls != 2 {
+		t.Errorf("search calls after second run = %d, want 2 (first miss must be cached)", dst.searchCalls)
+	}
+}
+
+func TestSearchBatchMakesProgressPastUnmatchedArtists(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.artists = []domain.Artist{
+		{Provider: domain.Yandex, ID: "ya1", Name: "Unknown One"},
+		{Provider: domain.Yandex, ID: "ya2", Name: "Unknown Two"},
+	}
+	dst := newFake(domain.Spotify)
+
+	engine, st := newTestEngine(t, src, dst, Options{
+		Categories:  Categories{Artists: true},
+		SearchBatch: 1,
+	})
+	first, err := engine.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Artists.Unmatched != 1 || first.Artists.Deferred != 1 {
+		t.Errorf("first run stats = %+v, want unmatched 1, deferred 1", first.Artists)
+	}
+	if dst.artistSearchCalls != 1 {
+		t.Errorf("artist search calls after first run = %d, want 1", dst.artistSearchCalls)
+	}
+
+	next := &Engine{
+		Source:  src,
+		Target:  dst,
+		Matcher: engine.Matcher,
+		Store:   st,
+		Log:     engine.Log,
+		Options: Options{Categories: Categories{Artists: true}, SearchBatch: 1},
+	}
+	second, err := next.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Artists.Unmatched != 2 || second.Artists.Deferred != 0 {
+		t.Errorf("second run stats = %+v, want unmatched 2, deferred 0", second.Artists)
+	}
+	if second.BatchLimitReached {
+		t.Error("second run should have finished the collection")
+	}
+	if dst.artistSearchCalls != 2 {
+		t.Errorf("artist search calls after second run = %d, want 2 (first miss must be cached)", dst.artistSearchCalls)
+	}
+}
+
 func TestEmptyLikesDoNotCreatePlaylist(t *testing.T) {
 	src := newFake(domain.Yandex)
 	dst := newFake(domain.Spotify)
@@ -616,6 +892,26 @@ func TestEmptyLikesDoNotCreatePlaylist(t *testing.T) {
 	}
 	if len(dst.created) != 0 {
 		t.Errorf("created %v for an empty likes library", dst.created)
+	}
+}
+
+func TestUnmatchedTrackSearchedOncePerRun(t *testing.T) {
+	src := newFake(domain.Yandex)
+	dst := newFake(domain.Spotify)
+	engine, _ := newTestEngine(t, src, dst, Options{})
+	tr := track(domain.Yandex, "y1", "Unknown Song", "Nobody", 1000)
+
+	for i := 0; i < 3; i++ {
+		res, err := engine.resolve(context.Background(), tr, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Unmatched == nil {
+			t.Fatal("expected an unmatched result")
+		}
+	}
+	if dst.searchCalls != 1 {
+		t.Errorf("search calls = %d, want 1 for repeated unmatched tracks", dst.searchCalls)
 	}
 }
 
@@ -739,6 +1035,22 @@ func TestMirrorSkippedWhenLimited(t *testing.T) {
 	}
 	if len(dst.playlistTracks[existing.ID]) != 2 {
 		t.Error("mirror removed tracks despite a truncated source")
+	}
+}
+
+func TestQuotaErrorStopsRun(t *testing.T) {
+	src := newFake(domain.Yandex)
+	src.liked = []domain.Track{track(domain.Yandex, "y1", "Song", "Artist", 180000)}
+	dst := newFake(domain.Spotify)
+	dst.searchErr = &httpx.RateLimitError{
+		Host:          "api.spotify.com",
+		RetryAfter:    time.Hour,
+		QuotaExceeded: true,
+	}
+	engine, _ := newTestEngine(t, src, dst, Options{Categories: Categories{Likes: true}})
+	_, err := engine.Run(context.Background())
+	if !errors.Is(err, httpx.ErrQuotaExceeded) {
+		t.Fatalf("err = %v, want quota exceeded", err)
 	}
 }
 

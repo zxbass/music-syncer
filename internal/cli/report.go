@@ -38,7 +38,7 @@ func printTransferReport(w io.Writer, report *syncer.Report) {
 	fmt.Fprintf(w, "Duration: %s\n", report.FinishedAt.Sub(report.StartedAt).Round(time.Second))
 
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "\nPLAYLIST\tTRACKS\tADDED\tEXISTING\tUNMATCHED\tREMOVED\tSTATUS")
+	fmt.Fprintln(tw, "\nPLAYLIST\tTRACKS\tADDED\tEXISTING\tUNMATCHED\tDEFERRED\tREMOVED\tSTATUS")
 	for _, pl := range report.Playlists {
 		status := "ok"
 		switch {
@@ -55,8 +55,9 @@ func printTransferReport(w io.Writer, report *syncer.Report) {
 		if name == "" {
 			name = pl.TargetName
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%s\n",
-			name, pl.Stats.Source, pl.Stats.Added, pl.Stats.Existing, pl.Stats.Unmatched, pl.Removed, status)
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+			name, pl.Stats.Source, pl.Stats.Added, pl.Stats.Existing, pl.Stats.Unmatched,
+			pl.Stats.Deferred, pl.Removed, status)
 	}
 	_ = tw.Flush()
 
@@ -80,12 +81,19 @@ func printTransferReport(w io.Writer, report *syncer.Report) {
 				playlist += " (would create)"
 			}
 		}
-		fmt.Fprintf(w, "\nLiked tracks%s: %d source, %d added, %d already present, %d unmatched, %d failed\n",
-			playlist, report.Likes.Source, report.Likes.Added, report.Likes.Existing, report.Likes.Unmatched, report.Likes.Failed)
+		fmt.Fprintf(w, "\nLiked tracks%s: %d source, %d added, %d already present, %d unmatched, %d deferred, %d failed\n",
+			playlist, report.Likes.Source, report.Likes.Added, report.Likes.Existing,
+			report.Likes.Unmatched, report.Likes.Deferred, report.Likes.Failed)
 	}
 	if report.Artists != nil {
-		fmt.Fprintf(w, "Artists: %d source, %d followed, %d already followed, %d unmatched, %d failed\n",
-			report.Artists.Source, report.Artists.Added, report.Artists.Existing, report.Artists.Unmatched, report.Artists.Failed)
+		fmt.Fprintf(w, "Artists: %d source, %d followed, %d already followed, %d unmatched, %d deferred, %d failed\n",
+			report.Artists.Source, report.Artists.Added, report.Artists.Existing,
+			report.Artists.Unmatched, report.Artists.Deferred, report.Artists.Failed)
+	}
+
+	if report.BatchLimitReached {
+		fmt.Fprintf(w, "\nSearch batch limit reached (%d new catalog lookups). Progress is saved; rerun the same command to continue.\n",
+			report.SearchBatch)
 	}
 
 	unmatched := collectUnmatched(report)

@@ -337,7 +337,7 @@ func (p *Provider) SearchArtists(ctx context.Context, artist domain.Artist, limi
 func (p *Provider) CreatePlaylist(ctx context.Context, name, description string) (domain.Playlist, error) {
 	body := map[string]any{
 		"name":        name,
-		"description": description,
+		"description": sanitizePlaylistDescription(description),
 		"public":      false,
 	}
 	var pl playlist
@@ -485,6 +485,19 @@ func clampLimit(limit, max int) int {
 func sanitizeQuery(q string) string {
 	q = strings.NewReplacer("\n", " ", "\r", " ", `"`, " ").Replace(q)
 	return strings.Join(strings.Fields(q), " ")
+}
+
+// sanitizePlaylistDescription removes line breaks and other control
+// whitespace. Spotify rejects descriptions containing newlines with HTTP 400,
+// even though the API reference does not mention that restriction.
+func sanitizePlaylistDescription(description string) string {
+	description = strings.Join(strings.Fields(description), " ")
+	const maxDescription = 300
+	runes := []rune(description)
+	if len(runes) > maxDescription {
+		return string(runes[:maxDescription])
+	}
+	return description
 }
 
 var _ domain.Provider = (*Provider)(nil)

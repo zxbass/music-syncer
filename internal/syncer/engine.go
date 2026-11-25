@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zxbass/music-syncer/internal/domain"
+	"github.com/zxbass/music-syncer/internal/httpx"
 	"github.com/zxbass/music-syncer/internal/matcher"
 	"github.com/zxbass/music-syncer/internal/store"
 )
@@ -76,6 +77,10 @@ type Options struct {
 	DryRun       bool
 	// Limit caps the number of source tracks per collection. Zero means all.
 	Limit int
+	// SearchBatch caps the number of new catalog lookups per run. Zero means
+	// unlimited. Cached matches do not consume the budget, so repeated runs
+	// make forward progress without exhausting a provider's daily quota.
+	SearchBatch int
 }
 
 // TrackStats summarizes a track collection sync.
@@ -84,6 +89,7 @@ type TrackStats struct {
 	Existing  int `json:"existing"`
 	Added     int `json:"added"`
 	Unmatched int `json:"unmatched"`
+	Deferred  int `json:"deferred,omitempty"`
 	Failed    int `json:"failed"`
 }
 
@@ -96,6 +102,7 @@ type ArtistStats struct {
 	Existing  int `json:"existing"`
 	Added     int `json:"added"`
 	Unmatched int `json:"unmatched"`
+	Deferred  int `json:"deferred,omitempty"`
 	Failed    int `json:"failed"`
 }
 
@@ -141,19 +148,21 @@ type PlaylistResult struct {
 
 // Report is a complete synchronization report.
 type Report struct {
-	StartedAt        time.Time            `json:"started_at"`
-	FinishedAt       time.Time            `json:"finished_at"`
-	Source           domain.Name          `json:"source"`
-	Target           domain.Name          `json:"target"`
-	DryRun           bool                 `json:"dry_run"`
-	Categories       string               `json:"categories"`
-	Playlists        []PlaylistResult     `json:"playlists,omitempty"`
-	Likes            *TrackStats          `json:"likes,omitempty"`
-	LikesPlaylist    *LikesPlaylistResult `json:"likes_playlist,omitempty"`
-	Artists          *ArtistStats         `json:"artists,omitempty"`
-	Errors           []string             `json:"errors,omitempty"`
-	UnmatchedLikes   []Unmatched          `json:"unmatched_likes,omitempty"`
-	UnmatchedArtists []UnmatchedArtist    `json:"unmatched_artists,omitempty"`
+	StartedAt         time.Time            `json:"started_at"`
+	FinishedAt        time.Time            `json:"finished_at"`
+	Source            domain.Name          `json:"source"`
+	Target            domain.Name          `json:"target"`
+	DryRun            bool                 `json:"dry_run"`
+	Categories        string               `json:"categories"`
+	SearchBatch       int                  `json:"search_batch,omitempty"`
+	BatchLimitReached bool                 `json:"batch_limit_reached,omitempty"`
+	Playlists         []PlaylistResult     `json:"playlists,omitempty"`
+	Likes             *TrackStats          `json:"likes,omitempty"`
+	LikesPlaylist     *LikesPlaylistResult `json:"likes_playlist,omitempty"`
+	Artists           *ArtistStats         `json:"artists,omitempty"`
+	Errors            []string             `json:"errors,omitempty"`
+	UnmatchedLikes    []Unmatched          `json:"unmatched_likes,omitempty"`
+	UnmatchedArtists  []UnmatchedArtist    `json:"unmatched_artists,omitempty"`
 }
 
 // Engine transfers a library between two providers.
@@ -165,8 +174,24 @@ type Engine struct {
 	Log     *slog.Logger
 	Options Options
 
-	report *Report
+	report       *Report
+	unsaved      int
+	misses       map[string]*Unmatched
+	searchBudget int
+	deferred     bool
 }
+
+// stateCheckpointEvery bounds how many newly resolved match/miss decisions can
+// be lost if the process is killed before the final state save. On a quota or
+// rate limit the engine aborts and saves immediately, but a hard crash or
+// power loss must not force the next run to repeat all catalog searches.
+const stateCheckpointEvery = 50
+
+// missTTL controls how long an unmatched catalog lookup is remembered. It
+// keeps batched runs moving forward instead of spending the whole search
+// budget on the same unmatched tracks, while still re-checking the catalog
+// periodically.
+const missTTL = 7 * 24 * time.Hour
 
 // Run executes the configured transfer. A fatal authentication error stops the
 // run; ordinary per-item failures are recorded in the report.
@@ -183,20 +208,27 @@ func (e *Engine) Run(ctx context.Context) (*Report, error) {
 	if e.Store == nil {
 		return nil, errors.New("syncer: state store is required")
 	}
+	if e.Options.SearchBatch < 0 {
+		return nil, errors.New("syncer: search batch cannot be negative")
+	}
 	if e.Log == nil {
 		e.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
 	e.report = &Report{
-		StartedAt:  time.Now(),
-		Source:     e.Source.Name(),
-		Target:     e.Target.Name(),
-		DryRun:     e.Options.DryRun,
-		Categories: e.Options.Categories.String(),
+		StartedAt:   time.Now(),
+		Source:      e.Source.Name(),
+		Target:      e.Target.Name(),
+		DryRun:      e.Options.DryRun,
+		Categories:  e.Options.Categories.String(),
+		SearchBatch: e.Options.SearchBatch,
 	}
+	e.misses = make(map[string]*Unmatched)
+	e.searchBudget = e.Options.SearchBatch
+	e.deferred = false
 
 	var errs []error
-	if e.Options.Categories.Playlists {
+	if !e.deferred && e.Options.Categories.Playlists {
 		if err := e.syncPlaylists(ctx); err != nil {
 			if isFatal(err) {
 				return e.abort(err)
@@ -205,7 +237,7 @@ func (e *Engine) Run(ctx context.Context) (*Report, error) {
 			errs = append(errs, err)
 		}
 	}
-	if e.Options.Categories.Likes {
+	if !e.deferred && e.Options.Categories.Likes {
 		if err := e.syncLikes(ctx); err != nil {
 			if isFatal(err) {
 				return e.abort(err)
@@ -214,7 +246,7 @@ func (e *Engine) Run(ctx context.Context) (*Report, error) {
 			errs = append(errs, err)
 		}
 	}
-	if e.Options.Categories.Artists {
+	if !e.deferred && e.Options.Categories.Artists {
 		if err := e.syncArtists(ctx); err != nil {
 			if isFatal(err) {
 				return e.abort(err)
@@ -224,6 +256,7 @@ func (e *Engine) Run(ctx context.Context) (*Report, error) {
 		}
 	}
 
+	e.report.BatchLimitReached = e.deferred
 	e.finish()
 	if err := e.Store.Save(); err != nil {
 		errs = append(errs, err)
@@ -236,6 +269,7 @@ func (e *Engine) finish() {
 }
 
 func (e *Engine) abort(err error) (*Report, error) {
+	e.recordError("transfer aborted", err)
 	e.finish()
 	_ = e.Store.Save()
 	return e.report, err
@@ -251,10 +285,85 @@ func (e *Engine) noteError(scope string, err error) {
 	e.report.Errors = append(e.report.Errors, fmt.Sprintf("%s: %v", scope, err))
 }
 
+// takeSearch reserves one new catalog lookup. When the configured batch is
+// spent the engine stops early and leaves the remaining work for the next run.
+func (e *Engine) takeSearch() bool {
+	if e.Options.SearchBatch <= 0 {
+		return true
+	}
+	if e.searchBudget <= 0 {
+		e.deferred = true
+		return false
+	}
+	e.searchBudget--
+	return true
+}
+
+// checkpoint saves the state periodically so a killed process does not lose
+// all match and miss decisions made since the start of the run.
+func (e *Engine) checkpoint() {
+	e.unsaved++
+	if e.unsaved < stateCheckpointEvery {
+		return
+	}
+	e.unsaved = 0
+	if err := e.Store.Save(); err != nil {
+		e.recordError("save state", err)
+	}
+}
+
+// linkPlaylist stores a source -> target playlist link immediately and saves
+// the state. The link must exist before tracks are added: if the process is
+// interrupted, the next run must reuse the same target playlist instead of
+// creating a second one.
+func (e *Engine) linkPlaylist(srcID string, target domain.Playlist) {
+	if e.Options.DryRun || target.ID == "" {
+		return
+	}
+	e.Store.PutPlaylist(e.Source.Name(), e.Target.Name(), srcID, target.ID, target.Name)
+	if err := e.Store.Save(); err != nil {
+		e.recordError("save state", err)
+	}
+}
+
+// errSearchBatch signals that the per-run catalog search budget is spent. It
+// is not an error: the caller stops the current collection, saves progress and
+// lets the next run continue from the cached matches.
+var errSearchBatch = errors.New("search batch limit reached")
+
 func isFatal(err error) bool {
 	return errors.Is(err, context.Canceled) ||
 		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, httpx.ErrRateLimited) ||
+		errors.Is(err, httpx.ErrQuotaExceeded) ||
 		domain.IsUnauthorized(err)
+}
+
+// targetTrackBatch is the maximum number of tracks written by one AddTracks
+// call. Writing in batches keeps progress visible and lets a resumed run skip
+// the tracks that were already written.
+const targetTrackBatch = 100
+
+// addTracks writes tracks in provider-sized batches and updates stats as each
+// batch succeeds. A failure stops the remaining batches; the next run reloads
+// the target playlist and only adds what is still missing.
+func (e *Engine) addTracks(ctx context.Context, target domain.Playlist, tracks []domain.Track, stats *TrackStats) error {
+	if len(tracks) == 0 {
+		return nil
+	}
+	if e.Options.DryRun {
+		stats.Added += len(tracks)
+		return nil
+	}
+	for start := 0; start < len(tracks); start += targetTrackBatch {
+		end := min(start+targetTrackBatch, len(tracks))
+		if err := e.Target.AddTracks(ctx, target, tracks[start:end]); err != nil {
+			stats.Failed += len(tracks) - start
+			return err
+		}
+		stats.Added += end - start
+	}
+	return nil
 }
 
 // resolution is the outcome of mapping one source track to the target.
@@ -280,13 +389,36 @@ func (e *Engine) resolve(ctx context.Context, src domain.Track, known *trackInde
 		return resolution{Track: track, Confidence: cached.Confidence, Existing: knownIDs[track.ID]}, nil
 	}
 
+	// A track already present in the target collection is a free, exact
+	// match. Check it before cached misses: a miss from another collection or
+	// an earlier run must not hide a track that is now available here.
 	if known != nil {
 		if best, ok := e.Matcher.Best(src, known.lookup(src.Title)); ok {
 			e.Store.PutMatch(src.Provider, e.Target.Name(), src.ID, best.Track, best.Score)
+			e.checkpoint()
 			return resolution{Track: best.Track, Confidence: best.Score, Existing: true}, nil
 		}
 	}
 
+	if src.ID != "" && e.misses != nil {
+		if miss, ok := e.misses[src.Key()]; ok {
+			return resolution{Unmatched: miss}, nil
+		}
+	}
+	if src.ID != "" {
+		if miss, ok := e.Store.LookupMiss(src.Provider, e.Target.Name(), src.ID); ok &&
+			time.Since(miss.UpdatedAt) < missTTL {
+			unmatched := &Unmatched{Source: src, Reason: miss.Reason}
+			if e.misses != nil {
+				e.misses[src.Key()] = unmatched
+			}
+			return resolution{Unmatched: unmatched}, nil
+		}
+	}
+
+	if !e.takeSearch() {
+		return resolution{}, errSearchBatch
+	}
 	candidates, err := e.Target.SearchTracks(ctx, src, 10)
 	if err != nil {
 		return resolution{}, err
@@ -295,6 +427,7 @@ func (e *Engine) resolve(ctx context.Context, src domain.Track, known *trackInde
 	best, ok := e.Matcher.Best(src, candidates)
 	if ok {
 		e.Store.PutMatch(src.Provider, e.Target.Name(), src.ID, best.Track, best.Score)
+		e.checkpoint()
 		return resolution{
 			Track:      best.Track,
 			Confidence: best.Score,
@@ -303,6 +436,14 @@ func (e *Engine) resolve(ctx context.Context, src domain.Track, known *trackInde
 	}
 
 	unmatched := e.unmatchedTrack(src, ranked)
+	if src.ID != "" {
+		if e.misses == nil {
+			e.misses = make(map[string]*Unmatched)
+		}
+		e.misses[src.Key()] = unmatched
+		e.Store.PutMiss(src.Provider, e.Target.Name(), src.ID, unmatched.Reason)
+		e.checkpoint()
+	}
 	return resolution{Unmatched: unmatched}, nil
 }
 
@@ -338,8 +479,18 @@ func (e *Engine) resolveArtist(ctx context.Context, src domain.Artist, known *ar
 	if known != nil {
 		if best, ok := e.Matcher.BestArtist(src, known.lookup(src.Name)); ok {
 			e.Store.PutArtist(src.Provider, e.Target.Name(), src.ID, best.Artist.ID, best.Artist.Name)
+			e.checkpoint()
 			return best.Artist, true, nil, nil
 		}
+	}
+	if src.ID != "" {
+		if miss, ok := e.Store.LookupArtistMiss(src.Provider, e.Target.Name(), src.ID); ok &&
+			time.Since(miss.UpdatedAt) < missTTL {
+			return domain.Artist{}, false, &UnmatchedArtist{Source: src, Reason: miss.Reason}, nil
+		}
+	}
+	if !e.takeSearch() {
+		return domain.Artist{}, false, nil, errSearchBatch
 	}
 	candidates, err := e.Target.SearchArtists(ctx, src, 10)
 	if err != nil {
@@ -348,12 +499,17 @@ func (e *Engine) resolveArtist(ctx context.Context, src domain.Artist, known *ar
 	best, ok := e.Matcher.BestArtist(src, candidates)
 	if ok {
 		e.Store.PutArtist(src.Provider, e.Target.Name(), src.ID, best.Artist.ID, best.Artist.Name)
+		e.checkpoint()
 		return best.Artist, false, nil, nil
 	}
 	unmatched := &UnmatchedArtist{Source: src, Reason: "no confident artist match"}
 	if best.Score > 0 {
 		unmatched.Best = &best
 		unmatched.Reason = fmt.Sprintf("best score %.2f is below threshold %.2f", best.Score, matcher.DefaultArtistThreshold)
+	}
+	if src.ID != "" {
+		e.Store.PutArtistMiss(src.Provider, e.Target.Name(), src.ID, unmatched.Reason)
+		e.checkpoint()
 	}
 	return domain.Artist{}, false, unmatched, nil
 }

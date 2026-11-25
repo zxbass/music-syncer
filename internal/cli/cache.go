@@ -25,6 +25,7 @@ func (a *App) cacheCmd() *cobra.Command {
 				stats := store.Stats()
 				fmt.Fprintf(a.out, "State file: %s\n", store.Path())
 				fmt.Fprintf(a.out, "  track matches:   %d\n", stats.Matches)
+				fmt.Fprintf(a.out, "  cached misses:   %d\n", stats.Misses)
 				fmt.Fprintf(a.out, "  playlist links:  %d\n", stats.Playlists)
 				fmt.Fprintf(a.out, "  artist links:    %d\n", stats.Artists)
 				return nil

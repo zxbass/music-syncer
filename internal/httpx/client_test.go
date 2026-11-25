@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -47,6 +48,61 @@ func TestRetry429ReplaysBody(t *testing.T) {
 	}
 	if len(bodies) != 2 || bodies[0] != "payload" || bodies[1] != "payload" {
 		t.Errorf("bodies = %v", bodies)
+	}
+}
+
+func TestQuotaExceededIsNotRetried(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w,
+			`{"error":{"status":429,"message":"Too many requests","reason":"QUOTA_EXCEEDED"}}`)
+	}))
+	defer srv.Close()
+
+	_, err := testClient().Do(mustRequest(t, http.MethodGet, srv.URL))
+	if err == nil {
+		t.Fatal("expected a quota error")
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (quota must not be retried)", calls)
+	}
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Errorf("error = %v, want ErrQuotaExceeded", err)
+	}
+	if errors.Is(err, ErrRateLimited) {
+		t.Errorf("quota error also matched ErrRateLimited")
+	}
+	var limit *RateLimitError
+	if !errors.As(err, &limit) || !limit.QuotaExceeded || limit.RetryAfter != time.Hour {
+		t.Errorf("limit = %+v", limit)
+	}
+}
+
+func TestLongRateLimitIsReturnedWithoutSleeping(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	start := time.Now()
+	_, err := testClient().Do(mustRequest(t, http.MethodGet, srv.URL))
+	if err == nil {
+		t.Fatal("expected a rate limit error")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Error("client slept instead of returning a long rate limit")
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+	if !errors.Is(err, ErrRateLimited) {
+		t.Errorf("error = %v, want ErrRateLimited", err)
 	}
 }
 
@@ -147,6 +203,10 @@ func TestRetryAfterParsing(t *testing.T) {
 	resp.Header.Set("Retry-After", "2")
 	if got := retryAfter(resp, time.Second); got != 2*time.Second {
 		t.Errorf("seconds: got %v", got)
+	}
+	resp.Header.Set("Retry-After", "120")
+	if got := retryAfter(resp, time.Second); got != 2*time.Minute {
+		t.Errorf("long seconds: got %v", got)
 	}
 	resp.Header.Set("Retry-After", "invalid")
 	if got := retryAfter(resp, 3*time.Second); got != 3*time.Second {

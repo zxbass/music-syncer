@@ -62,6 +62,45 @@ func TestMatchesPlaylistsArtists(t *testing.T) {
 	}
 }
 
+func TestMissCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.PutMiss(domain.Yandex, domain.Spotify, "y1", "no confident match")
+	st.PutArtistMiss(domain.Yandex, domain.Spotify, "ya1", "no confident artist match")
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	miss, ok := reopened.LookupMiss(domain.Yandex, domain.Spotify, "y1")
+	if !ok || miss.Reason != "no confident match" {
+		t.Errorf("miss = %+v, ok=%v", miss, ok)
+	}
+	artistMiss, ok := reopened.LookupArtistMiss(domain.Yandex, domain.Spotify, "ya1")
+	if !ok || artistMiss.Reason != "no confident artist match" {
+		t.Errorf("artist miss = %+v, ok=%v", artistMiss, ok)
+	}
+	if got := reopened.Stats().Misses; got != 2 {
+		t.Errorf("misses = %d, want 2", got)
+	}
+
+	reopened.PutMatch(domain.Yandex, domain.Spotify, "y1",
+		domain.Track{Provider: domain.Spotify, ID: "s1"}, 1)
+	if _, ok := reopened.LookupMiss(domain.Yandex, domain.Spotify, "y1"); ok {
+		t.Error("track miss was not cleared after a successful match")
+	}
+	reopened.PutArtist(domain.Yandex, domain.Spotify, "ya1", "sa1", "Artist")
+	if _, ok := reopened.LookupArtistMiss(domain.Yandex, domain.Spotify, "ya1"); ok {
+		t.Error("artist miss was not cleared after a successful match")
+	}
+}
+
 func TestMissingAndEmpty(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(filepath.Join(dir, "state.json"))
