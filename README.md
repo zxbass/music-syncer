@@ -123,6 +123,80 @@ go install github.com/zxbass/music-syncer/cmd/music-syncer@latest
 
 Если программа уже добавлена в `PATH`, префикс `.\` не нужен.
 
+## Готовые релизы
+
+Готовые бинарники публикуются на странице
+[GitHub Releases](https://github.com/zxbass/music-syncer/releases).
+
+| Платформа | Архитектура | Файл |
+|---|---|---|
+| Linux | x86_64 | `music-syncer_<version>_linux_amd64.tar.gz` |
+| Linux | ARM64 | `music-syncer_<version>_linux_arm64.tar.gz` |
+| macOS | Intel | `music-syncer_<version>_darwin_amd64.tar.gz` |
+| macOS | Apple Silicon | `music-syncer_<version>_darwin_arm64.tar.gz` |
+| Windows | x86_64 | `music-syncer_<version>_windows_amd64.zip` |
+| Windows | ARM64 | `music-syncer_<version>_windows_arm64.zip` |
+
+В каждом архиве лежат `music-syncer` (в Windows — `music-syncer.exe`),
+`README.md`, `LICENSE` и `config.example.yaml`. Рядом с архивами публикуется
+`checksums.txt` с SHA-256.
+
+### Linux/macOS
+
+```bash
+VERSION=0.1.0
+OS=linux          # linux или darwin
+ARCH=amd64        # amd64 или arm64
+FILE="music-syncer_${VERSION}_${OS}_${ARCH}.tar.gz"
+
+curl -LO "https://github.com/zxbass/music-syncer/releases/download/v${VERSION}/${FILE}"
+tar -xzf "${FILE}"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 music-syncer "$HOME/.local/bin/"
+music-syncer version
+```
+
+Если `~/.local/bin` отсутствует в `PATH`, добавьте его в `~/.profile` или
+`~/.zshrc`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Windows PowerShell
+
+```powershell
+$VERSION = "0.1.0"
+$FILE = "music-syncer_${VERSION}_windows_amd64.zip"
+
+Invoke-WebRequest `
+  "https://github.com/zxbass/music-syncer/releases/download/v$VERSION/$FILE" `
+  -OutFile $FILE
+
+Expand-Archive $FILE -DestinationPath "music-syncer-$VERSION"
+.\music-syncer-$VERSION\music-syncer.exe version
+```
+
+Для ARM64-версии Windows замените `amd64` на `arm64`.
+
+Бинарники не подписаны: macOS Gatekeeper или Windows SmartScreen могут
+потребовать подтверждения при первом запуске. Проверяйте SHA-256 по
+`checksums.txt` перед запуском.
+
+### Как выпускается релиз
+
+Релиз запускается автоматически при пуше тега:
+
+```bash
+git tag -a v0.1.0 -m "music-syncer v0.1.0"
+git push origin v0.1.0
+```
+
+GitHub Actions собирает Linux, macOS и Windows бинарники через GoReleaser,
+формирует архивы, checksums и публикует GitHub Release. Повторный запуск
+можно инициировать вручную через `workflow_dispatch` с указанием существующего
+тега.
+
 ## Настройка Spotify
 
 1. Откройте <https://developer.spotify.com/dashboard> и создайте приложение.
