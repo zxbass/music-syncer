@@ -1,0 +1,32 @@
+# Example music-syncer configuration.
+#
+# The real file is created by `music-syncer auth ...` in
+#   ~/.config/music-syncer/config.yaml
+# and is written with mode 0600 because it contains OAuth tokens.
+#
+# You normally do not need to edit this file by hand, except for match.threshold.
+
+spotify:
+  # Client ID of your app from https://developer.spotify.com/dashboard
+  client_id: ""
+  # Access and refresh tokens are managed by music-syncer.
+  access_token: ""
+  refresh_token: ""
+  expiry: 0001-01-01T00:00:00Z
+  user_id: ""
+  display_name: ""
+
+yandex:
+  # Personal Yandex Music OAuth token, managed by `music-syncer auth yandex`.
+  token: ""
+  uid: ""
+  display_name: ""
+
+match:
+  # Minimum confidence for automatic track matching (0.0 - 1.0).
+  # Lower values find more tracks but increase the risk of wrong matches.
+  threshold: 0.72
+  # Maximum duration difference for an automatic match, in milliseconds.
+  # Default: 30000 (30 seconds). Increase for long DJ edits, decrease for
+  # stricter matching.
+  duration_tolerance_ms: 30000

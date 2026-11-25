@@ -1,0 +1,21 @@
+# Build output
+/bin/
+/music-syncer
+/music-syncer.exe
+
+# Test and coverage output
+*.test
+*.out
+coverage.*
+
+# Local secrets and state
+/config.yaml
+/state.json
+/report*.json
+/reports/
+/export-*/
+
+# Editor/OS files
+/.idea/
+/.vscode/
+.DS_Store
